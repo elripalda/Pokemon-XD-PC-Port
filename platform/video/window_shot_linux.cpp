@@ -469,11 +469,14 @@ void PortShot_LinuxFrame(void) {
   AuroraInterpGetInfo(&info);
   size_t partial = 0;
   const uint32_t pictures = PortFreeze_PictureCount(&partial);
-  if ((pictures == 0 || partial != 0) && ++sGrabTries < 60) {
+  constexpr size_t kEndOfPictureBytes = 64;
+  const bool atBoundary = pictures != 0 && partial <= kEndOfPictureBytes && info.pending == 0;
+  if (!atBoundary && ++sGrabTries < 600) {
     return;
   }
-  if (pictures == 0) {
-    FinishGrab(nullptr, "the game has not drawn a whole picture yet");
+  if (!atBoundary) {
+    FinishGrab(nullptr, pictures == 0 ? "the game has not drawn a whole picture yet"
+                                      : "the game never paused between two pictures");
     return;
   }
   if (!PortFreeze_RedrawBegin()) {

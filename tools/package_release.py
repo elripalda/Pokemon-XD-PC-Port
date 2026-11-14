@@ -97,6 +97,11 @@ Public beta {version}
 Thank you for trying it! This is a beta: expect bugs, and keep a copy of your save.
 Questions, bug reports, other players: https://discord.gg/XVbDVXH4Pn
 
+New in 0.5.1
+------------
+- Fixes the quick black flashes some players saw every second or two while playing 0.5.0 (caused by the
+  new save pictures in the save list).
+
 New in 0.5.0
 ------------
 - Online friend battles (VS MODE): one of you makes a room, the other types its code. Both PCs run the
