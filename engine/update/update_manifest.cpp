@@ -1,4 +1,5 @@
 #include "update.h"
+#include "update_internal.h"
 
 extern "C" {
 #include <monocypher.h>
@@ -147,7 +148,7 @@ class Reader {
     }
     Space();
     if (p_ != t_.size()) {
-      error = "text after the end of the JSON";
+      error = Tr("text after the end of the JSON");
       return false;
     }
     return true;
@@ -434,43 +435,43 @@ bool ParseSignedManifest(std::string_view fileText, std::string_view publicKeyHe
                          Manifest& out, std::string& error, std::string_view system) {
   out = Manifest();
   if (fileText.size() > kMaxManifestBytes) {
-    error = "the update information is too large";
+    error = Tr("the update information is too large");
     return false;
   }
   if (fileText.size() >= 3 && static_cast<unsigned char>(fileText[0]) == 0xEF &&
       static_cast<unsigned char>(fileText[1]) == 0xBB && static_cast<unsigned char>(fileText[2]) == 0xBF) {
-    error = "the update information starts with a byte order mark (sign_update.py never writes one)";
+    error = Tr("the update information starts with a byte order mark (sign_update.py never writes one)");
     return false;
   }
   std::vector<uint8_t> key;
   if (!HexDecode(publicKeyHex, key) || key.size() != 32) {
-    error = "this version has no valid key to check updates with";
+    error = Tr("this version has no valid key to check updates with");
     return false;
   }
   Json doc;
   std::string why;
   if (!Reader(fileText).Document(doc, why)) {
-    error = "the update information can't be read (" + why + ")";
+    error = Fmt(Tr("the update information can't be read (%s)"), why.c_str());
     return false;
   }
   const Json* signature = doc.Member("signature");
   const Json* manifest = doc.Member("manifest");
   if (doc.kind != Json::Kind::Object || signature == nullptr || signature->kind != Json::Kind::String ||
       manifest == nullptr || manifest->kind != Json::Kind::Object) {
-    error = "the update information has no signed manifest";
+    error = Tr("the update information has no signed manifest");
     return false;
   }
   std::vector<uint8_t> sig;
   if (!HexDecode(signature->text, sig) || sig.size() != 64) {
-    error = "the update information's signature isn't readable";
+    error = Tr("the update information's signature isn't readable");
     return false;
   }
   const std::string_view signedBytes = fileText.substr(manifest->begin, manifest->end - manifest->begin);
   std::string message(kSignedPrefix);
   message.append(signedBytes);
   if (!VerifyEd25519(key.data(), sig.data(), message)) {
-    error = "the update information's signature is wrong: it was not made by this program's publisher, or it was "
-            "changed after signing";
+    error = Tr("the update information's signature is wrong: it was not made by this program's publisher, or it was "
+            "changed after signing");
     return false;
   }
   const auto text = [&](const Json* from, const char* name, std::string& into, bool required) {
@@ -486,35 +487,35 @@ bool ParseSignedManifest(std::string_view fileText, std::string_view publicKeyHe
   };
   const Json* format = manifest->Member("format");
   if (format == nullptr || format->kind != Json::Kind::Number || !format->integer || format->number != 1) {
-    error = "the update information is in a newer format: this version can't read it (download the new version "
-            "by hand)";
+    error = Tr("the update information is in a newer format: this version can't read it (download the new version "
+            "by hand)");
     return false;
   }
   Manifest m;
   if (!text(manifest, "product", m.product, true) || !text(manifest, "version", m.version, true) ||
       !text(manifest, "date", m.date, false) || !text(manifest, "notes", m.notes, false)) {
-    error = "the update information is missing something (product, version)";
+    error = Tr("the update information is missing something (product, version)");
     return false;
   }
   if (m.product != product) {
-    error = "the update information is for another program (" + m.product + ")";
+    error = Fmt(Tr("the update information is for another program (%s)"), m.product.c_str());
     return false;
   }
   std::vector<uint32_t> parts;
   if (!ParseVersion(m.version, parts)) {
-    error = "the update information's version isn't readable: " + m.version;
+    error = Fmt(Tr("the update information's version isn't readable: %s"), m.version.c_str());
     return false;
   }
   const Json* source = manifest;
   const Json* systems = manifest->Member("systems");
   if (systems != nullptr) {
     if (systems->kind != Json::Kind::Object) {
-      error = "the update information's list of systems isn't readable";
+      error = Tr("the update information's list of systems isn't readable");
       return false;
     }
     source = systems->Member(system);
     if (source != nullptr && source->kind != Json::Kind::Object) {
-      error = "the update information's entry for " + std::string(system) + " isn't readable";
+      error = Fmt(Tr("the update information's entry for %s isn't readable"), std::string(system).c_str());
       return false;
     }
   } else if (system != "windows") {
@@ -526,23 +527,23 @@ bool ParseSignedManifest(std::string_view fileText, std::string_view publicKeyHe
     return true;
   }
   if (!text(source, "url", m.url, true) || !text(source, "sha256", m.sha256, true)) {
-    error = "the update information is missing something (url, sha256)";
+    error = Tr("the update information is missing something (url, sha256)");
     return false;
   }
   if (!IsLowerHex(m.sha256, 64)) {
-    error = "the update information's SHA-256 isn't readable";
+    error = Tr("the update information's SHA-256 isn't readable");
     return false;
   }
   const Json* size = source->Member("size");
   if (size == nullptr || size->kind != Json::Kind::Number || !size->integer || size->number <= 0 ||
       static_cast<uint64_t>(size->number) > kMaxPackageBytes) {
-    error = "the update information's package size isn't usable";
+    error = Tr("the update information's package size isn't usable");
     return false;
   }
   m.size = static_cast<uint64_t>(size->number);
   const std::string_view url = m.url;
   if (url.rfind("https://", 0) != 0 && url.rfind("http://", 0) != 0 && url.rfind("file:///", 0) != 0) {
-    error = "the update information's download address isn't usable";
+    error = Tr("the update information's download address isn't usable");
     return false;
   }
   out = std::move(m);

@@ -391,6 +391,11 @@ bool Import(const fs::path& dataFolder, const fs::path& file, const std::string&
     }
     bytes.assign((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
   }
+  return ImportBytes(dataFolder, bytes, name, cardFolder, cardFileName, newId, error);
+}
+
+bool ImportBytes(const fs::path& dataFolder, const std::vector<uint8_t>& bytes, const std::string& name,
+                 const fs::path& cardFolder, const std::string& cardFileName, std::string& newId, std::string& error) {
   CardFile card;
   std::string why;
   if (!ReadGci(bytes, card, why)) {

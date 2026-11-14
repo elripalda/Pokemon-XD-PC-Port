@@ -10,6 +10,8 @@ extern "C" {
 
 void PortSpeedups_HandleEvent(const void* sdlEvent);
 
+uint32_t PortSpeedups_BreakPresses(void);
+
 void PortSpeedups_Frame(bool gameWants);
 
 void PortSpeedups_Field(uint32_t field);

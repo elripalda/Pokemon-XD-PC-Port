@@ -6,7 +6,7 @@ r"""Assembles the player's folder from a build: dist\Pokemon XD PC\ (README in l
 The folder holds only what a player needs:
 
     Pokemon XD PC\
-      Pokemon XD.exe      start here (starts game\xd_launcher.exe; tiny, needs no libraries)
+      Pokemon XD Launcher.exe      start here (starts game\xd_launcher.exe; tiny, needs no libraries)
       Read me.txt
       game\               the launcher, the game, their libraries, the launcher's font, licences
 
@@ -41,7 +41,7 @@ FONTS = ['Inter-Regular.ttf', 'Inter-SemiBold.ttf', 'InterDisplay-Bold.ttf', 'OF
 READ_ME = """Pokemon XD PC port
 ==================
 
-Start "Pokemon XD.exe". It opens the launcher: choose your disc image, how you want to play, your
+Start "Pokemon XD Launcher.exe". It opens the launcher: choose your disc image, how you want to play, your
 controls and mods, then press Play.
 
 You need your own copy of Pokemon XD: Gale of Darkness (USA version, game ID GXXE01) as a disc image
@@ -59,7 +59,7 @@ Settings, mods, the memory card (your save), logs and the icon made from your di
 doesn't touch them.
 
 Portable use (everything inside this folder instead, for example on a USB stick): put a file named
-data_location.json next to "Pokemon XD.exe" containing
+data_location.json next to "Pokemon XD Launcher.exe" containing
     {"version": 1, "mode": "portable"}
 Your things are then kept in the "portable" folder next to it. (The same file inside the "game"
 folder works too; its portable folder is then game\\portable.)
@@ -67,12 +67,12 @@ folder works too; its portable folder is then game\\portable.)
 Shortcuts
 ---------
 The launcher's Disc page has "Create Start menu shortcut" and "Create desktop shortcut". They point to
-"Pokemon XD.exe" and use an icon made from your own disc. If you move this folder, make them again.
+"Pokemon XD Launcher.exe" and use an icon made from your own disc. If you move this folder, make them again.
 
 The "game" folder
 -----------------
 Holds the game (xd.exe), the launcher (xd_launcher.exe), the libraries they use, the launcher's font
-and the licences of the parts made by others (game\\licenses). Keep it next to "Pokemon XD.exe".
+and the licences of the parts made by others (game\\licenses). Keep it next to "Pokemon XD Launcher.exe".
 You can also start xd.exe directly by dragging your disc image onto it; it uses the same settings.
 
 Updates
@@ -96,6 +96,33 @@ Public beta {version}
 =====================
 Thank you for trying it! This is a beta: expect bugs, and keep a copy of your save.
 Questions, bug reports, other players: https://discord.gg/XVbDVXH4Pn
+
+New in 0.5.0
+------------
+- Online friend battles (VS MODE): one of you makes a room, the other types its code. Both PCs run the
+  battle and only the button presses travel, encrypted, straight between the two PCs (no server of ours).
+  Teams: a preset, your own save's party or PC boxes, or any Pokemon you pick; the host chooses the rules
+  (Classic / Gen 4 / modern types), Shadow Pokemon on or off, and the levels. If your router does not let the
+  two PCs connect, the game says so. (Tested on one PC and over a loopback; not yet through two real home
+  routers: tell us how it goes.)
+- Online trading with friends: at the Pokemon Center PC in the story and from ONLINE on the title screen.
+  Every Pokemon is checked before it is offered; both of you say Yes before anything changes; a dropped
+  connection changes nothing. Pokemon that evolve by trade evolve in the game's own scene.
+- Modern types (New Game option): the Fairy type and the later type chart.
+- Randomizer: randomize the starter (random, pick 1 of 3, or the Eevee family).
+- Other languages: English (UK), German, French, Italian and Spanish from your own PAL disc (Extra assets
+  page, then Language on the Play page). The port's own texts in French, German, Italian and Spanish are
+  machine-made: corrections are welcome.
+- Launcher: import saves from Dolphin / GameCube, trade with a Game Boy Advance save, import a Colosseum
+  save; every page works with a controller (Steam Deck).
+- HD texture packs (Dolphin-style), a speedrun timer, skipping the logo movies and play statistics
+  (battles, bosses, time; caught / snagged / purified counts and steps are NOT done yet).
+- The port's own screens look like the game's, with a loading screen. New Game and the save picker restart
+  straight into the playthrough. The physical/special split is chosen per playthrough. The in-game
+  SETTINGS page has a 60 fps row. Leafeon and Glaceon have full-body pictures in the Eevee offer.
+- Fixed: the crash in the Eevee offer with Leaf Stone / Ice Stone (Gen 4); the battle menu in widescreen;
+  black pictures in the launcher; menus that ran too fast on high-refresh monitors; B now backs out of the
+  New Game setup screen.
 
 New in 0.4.2 (bug fixes)
 ------------------------
@@ -370,7 +397,7 @@ def main():
         sys.exit(f'Not a version: {version} (numbers with dots, like 1.2.0)')
     build = os.path.abspath(a.build)
     out = os.path.abspath(a.out)
-    missing = [f for f in ['Pokemon XD.exe'] + PROGRAMS + LIBRARIES + [PIPELINE_LIST]
+    missing = [f for f in ['Pokemon XD Launcher.exe'] + PROGRAMS + LIBRARIES + [PIPELINE_LIST]
                if not os.path.isfile(os.path.join(build, f))]
     missing += ['fonts/' + f for f in FONTS if not os.path.isfile(os.path.join(build, 'fonts', f))]
     if missing:
@@ -381,7 +408,7 @@ def main():
     game = os.path.join(out, 'game')
     os.makedirs(os.path.join(game, 'fonts'))
     os.makedirs(os.path.join(game, 'licenses'))
-    shutil.copy2(os.path.join(build, 'Pokemon XD.exe'), out)
+    shutil.copy2(os.path.join(build, 'Pokemon XD Launcher.exe'), out)
     for f in PROGRAMS + LIBRARIES + [PIPELINE_LIST]:
         shutil.copy2(os.path.join(build, f), game)
     for f in FONTS:
@@ -405,9 +432,25 @@ def main():
             if os.path.isfile(os.path.join(crt, f)):
                 shutil.copy2(os.path.join(crt, f), pbr_dir)
         print('pbr_models: the C++ converter (game/pbr_models)')
+        # The Colosseum characters converter (engine/formats/colo, docs/COLOSSEUM_MODELS.md): beside pbr_models, one folder of
+        # converters (the launcher's Extra assets page runs game\pbr_models\colo_models.exe; same libraries).
+        if os.path.isfile(os.path.join(build, 'colo_models.exe')):
+            shutil.copy2(os.path.join(build, 'colo_models.exe'), pbr_dir)
+            print('colo_models: the Colosseum characters converter (game/pbr_models)')
     elif os.path.isfile(os.path.join(PBR_MODELS, 'pbr_models.exe')):
         shutil.copytree(PBR_MODELS, pbr_dir)
         print('pbr_models: the frozen Python converter (game/pbr_models)')
+    # The language pack maker, game\xd_languages\xd_languages.exe (the Extra assets page's "Languages (from the European disc)":
+    # docs/LANGUAGES.md; no game data in it), with nod.dll and the C++ runtime beside it as for pbr_models.
+    lang_dir = os.path.join(game, 'xd_languages')
+    if os.path.isfile(os.path.join(build, 'xd_languages.exe')):
+        os.makedirs(lang_dir)
+        for f in ('xd_languages.exe', 'nod.dll'):
+            shutil.copy2(os.path.join(build, f), lang_dir)
+        for f in RUNTIME if crt else []:
+            if os.path.isfile(os.path.join(crt, f)):
+                shutil.copy2(os.path.join(crt, f), lang_dir)
+        print('xd_languages: the language pack maker (game/xd_languages)')
     if crt:
         for f in RUNTIME:
             if os.path.isfile(os.path.join(crt, f)):
@@ -431,9 +474,9 @@ def main():
             f.write(TESTER_NOTES.format(version=version))
 
     # Nothing else may be in it: no debug files, test tools, data folder files, disc pictures or game data.
-    allowed_top = {'Pokemon XD.exe', 'Read me.txt', 'game'}
+    allowed_top = {'Pokemon XD Launcher.exe', 'Read me.txt', 'game'}
     allowed_ext = {'.exe', '.dll', '.ttf', '.txt'}
-    allowed_exe = {'Pokemon XD.exe', 'xd.exe', 'xd_launcher.exe'}
+    allowed_exe = {'Pokemon XD Launcher.exe', 'xd.exe', 'xd_launcher.exe'}
     bad = [n for n in os.listdir(out) if n not in allowed_top]
     total = 0
     for dirpath, _, files in os.walk(out):
@@ -443,6 +486,8 @@ def main():
             ext = os.path.splitext(n)[1].lower()
             if n == PIPELINE_LIST and os.path.dirname(p) == game:
                 continue
+            if os.path.relpath(p, game).startswith('xd_languages' + os.sep) and n in ('xd_languages.exe', 'nod.dll') + tuple(RUNTIME):
+                continue   # the language pack maker's folder
             if os.path.relpath(p, game).startswith('pbr_models' + os.sep):
                 continue   # the converter's own folder (a frozen Python program: .pyd, .dll, .zip files)
             if ext not in allowed_ext or (ext == '.exe' and n not in allowed_exe):

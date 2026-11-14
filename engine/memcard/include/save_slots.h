@@ -1,6 +1,7 @@
 #ifndef ENGINE_SAVE_SLOTS_H
 #define ENGINE_SAVE_SLOTS_H
 
+#include <cstdint>
 #include <filesystem>
 #include <functional>
 #include <string>
@@ -48,6 +49,9 @@ std::vector<std::filesystem::path> RegionFolders(const std::filesystem::path& ca
 bool Import(const std::filesystem::path& dataFolder, const std::filesystem::path& file, const std::string& name,
             const std::filesystem::path& cardFolder, const std::string& cardFileName, std::string& newId,
             std::string& error);
+bool ImportBytes(const std::filesystem::path& dataFolder, const std::vector<uint8_t>& gciBytes, const std::string& name,
+                 const std::filesystem::path& cardFolder, const std::string& cardFileName, std::string& newId,
+                 std::string& error);
 bool Export(const std::filesystem::path& cardFile, const std::filesystem::path& to, std::string& error);
 
 }

@@ -180,7 +180,7 @@ bool ExtractTarGz(const fs::path& archive, const fs::path& folder, std::string& 
                   const std::function<bool()>& stop) {
   GzReader in(archive);
   if (!in.Ok()) {
-    error = "the package can't be read";
+    error = Tr("the package can't be read");
     return false;
   }
   std::error_code ec;
@@ -196,7 +196,7 @@ bool ExtractTarGz(const fs::path& archive, const fs::path& folder, std::string& 
     }
     uint8_t header[512];
     if (!in.Read(header, sizeof header)) {
-      error = "the package is damaged (it ends inside the file list)";
+      error = Tr("the package is damaged (it ends inside the file list)");
       return false;
     }
     if (AllZero(header, sizeof header)) {
@@ -216,18 +216,18 @@ bool ExtractTarGz(const fs::path& archive, const fs::path& folder, std::string& 
       sum += (i >= 148 && i < 156) ? ' ' : header[i];
     }
     if (!numbersOk || sum != stored) {
-      error = "the package is damaged (a file header doesn't add up)";
+      error = Tr("the package is damaged (a file header doesn't add up)");
       return false;
     }
     const char type = h[156] == '\0' ? '0' : h[156];
     if (type == 'L' || type == 'K' || type == 'x') {
       if (size > 64 * 1024) {
-        error = "the package holds an oversized header";
+        error = Tr("the package holds an oversized header");
         return false;
       }
       std::string data(static_cast<size_t>(size), '\0');
       if (!in.Read(data.data(), data.size()) || !in.Skip((512 - size % 512) % 512)) {
-        error = "the package is damaged";
+        error = Tr("the package is damaged");
         return false;
       }
       if (type == 'L') {
@@ -241,7 +241,7 @@ bool ExtractTarGz(const fs::path& archive, const fs::path& folder, std::string& 
     }
     if (type == 'g') {
       if (!in.Skip(size + (512 - size % 512) % 512)) {
-        error = "the package is damaged";
+        error = Tr("the package is damaged");
         return false;
       }
       continue;
@@ -260,25 +260,25 @@ bool ExtractTarGz(const fs::path& archive, const fs::path& folder, std::string& 
     }
     std::string safe;
     if (!detail::SafeName(raw, safe)) {
-      error = "the package holds a file name that isn't allowed: " + name;
+      error = Fmt(Tr("the package holds a file name that isn't allowed: %s"), name.c_str());
       return false;
     }
     if (detail::AncestorIsLink(folder, safe)) {
-      error = "the package writes through a link: " + safe;
+      error = Fmt(Tr("the package writes through a link: %s"), safe.c_str());
       return false;
     }
     const fs::path out = folder / detail::PathOf(safe);
     if (dir) {
       fs::create_directories(out, ec);
       if (!in.Skip(size + (512 - size % 512) % 512)) {
-        error = "the package is damaged";
+        error = Tr("the package is damaged");
         return false;
       }
       continue;
     }
     if (type == '2') {
       if (!in.Skip(size + (512 - size % 512) % 512)) {
-        error = "the package is damaged";
+        error = Tr("the package is damaged");
         return false;
       }
       fs::create_directories(out.parent_path(), ec);
@@ -288,12 +288,12 @@ bool ExtractTarGz(const fs::path& archive, const fs::path& folder, std::string& 
       continue;
     }
     if (type != '0' && type != '7') {
-      error = "the package holds something that isn't a file, folder or link: " + safe;
+      error = Fmt(Tr("the package holds something that isn't a file, folder or link: %s"), safe.c_str());
       return false;
     }
     totalBytes += size;
     if (totalBytes > 2 * kMaxPackageBytes) {
-      error = "the package is far too large when unpacked";
+      error = Tr("the package is far too large when unpacked");
       return false;
     }
     fs::create_directories(out.parent_path(), ec);
@@ -303,7 +303,7 @@ bool ExtractTarGz(const fs::path& archive, const fs::path& folder, std::string& 
     std::FILE* target = std::fopen(out.c_str(), "wb");
 #endif
     if (target == nullptr) {
-      error = "a file couldn't be written: " + detail::Utf8(out);
+      error = Fmt(Tr("a file couldn't be written: %s"), detail::Utf8(out).c_str());
       return false;
     }
     bool ok = true;
@@ -314,16 +314,16 @@ bool ExtractTarGz(const fs::path& archive, const fs::path& folder, std::string& 
     }
     ok = std::fclose(target) == 0 && ok;
     if (!ok || !in.Skip((512 - size % 512) % 512)) {
-      error = "the package is damaged: " + safe + " doesn't unpack correctly";
+      error = Fmt(Tr("the package is damaged: %s doesn't unpack correctly"), safe.c_str());
       return false;
     }
     if (!detail::FinishUnpackedFile(out, mode)) {
-      error = "a file's permissions couldn't be set: " + safe;
+      error = Fmt(Tr("a file's permissions couldn't be set: %s"), safe.c_str());
       return false;
     }
   }
   if (!in.FinishedCleanly()) {
-    error = "the package is damaged (its checksum doesn't fit)";
+    error = Tr("the package is damaged (its checksum doesn't fit)");
     return false;
   }
   return true;

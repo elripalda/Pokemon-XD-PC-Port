@@ -1,10 +1,13 @@
 #include "data_mods.h"
 
+#include "i18n.h"
 #include "json.h"
 #include "mods.h"
 
 #include <algorithm>
 #include <charconv>
+#include <cstdarg>
+#include <cstdio>
 #include <set>
 #include <tuple>
 
@@ -13,6 +16,16 @@ namespace engine::mods {
 namespace {
 
 using json::Value;
+using engine::i18n::Tr;
+
+std::string Fmt(const char* format, ...) {
+  char buf[2048];
+  va_list args;
+  va_start(args, format);
+  std::vsnprintf(buf, sizeof(buf), format, args);
+  va_end(args);
+  return buf;
+}
 
 std::string Lower(std::string_view s) {
   std::string out(s);
@@ -139,9 +152,10 @@ public:
       }
       const auto it = mTexts.find(id);
       if (it != mTexts.end() && it->second.mod != file.mod && !BothBuiltIn(it->second.mod, file)) {
-        Say(Message::Level::Warning, "Conflict: the mods " + Quote(ModName(it->second.mod)) + " and " + Quote(file.modName) +
-                                         " both change message #" + std::to_string(id) + ". " + Quote(file.modName) +
-                                         " (further down the list) is used.");
+        Say(Message::Level::Warning, Fmt(Tr("Conflict: the mods %s and %s both change message #%d. %s (further down the list) is "
+                                           "used."),
+                                         Quote(ModName(it->second.mod)).c_str(), Quote(file.modName).c_str(), static_cast<int>(id),
+                                         Quote(file.modName).c_str()));
       }
       mModNames[file.mod] = file.modName;
       mTexts[id] = {id, tv.text, file.mod, Where(file, tv.line)};
@@ -236,8 +250,8 @@ public:
       std::string error;
       std::vector<uint8_t> copy = w.now;
       if (!mCatalog.text.write(copy.data() + p.offset, copy.size() - p.offset, texts, written, error)) {
-        Say(Message::Level::Problem, "The mod " + Quote(mTextFiles.begin()->second) + ": its message texts can't be used (" +
-                                         error + ").");
+        Say(Message::Level::Problem, Fmt(Tr("The mod %s: its message texts can't be used (%s)."),
+                                         Quote(mTextFiles.begin()->second).c_str(), error.c_str()));
         continue;
       }
       w.now = std::move(copy);
@@ -247,8 +261,8 @@ public:
       if (taken.count(id) != 0) {
         out.texts.push_back(t);
       } else {
-        Say(Message::Level::Problem, "The mod " + Quote(mTextFiles.at(id)) + ", " + t.where + ": the game has no message #" +
-                                         std::to_string(id) + " that can be changed.");
+        Say(Message::Level::Problem, Fmt(Tr("The mod %s, %s: the game has no message #%d that can be changed."),
+                                         Quote(mTextFiles.at(id)).c_str(), t.where.c_str(), static_cast<int>(id)));
       }
     }
   }
@@ -484,7 +498,9 @@ private:
       }
       if (mCatalog.addedTextGroup == 0) {
         if (mNoTextSaid.insert(file.mod).second) {
-          Say(Message::Level::Warning, "The mod " + Quote(file.modName) + ": texts for new rows can't be added on this disc; they keep the text of the row they copy.");
+          Say(Message::Level::Warning, Fmt(Tr("The mod %s: texts for new rows can't be added on this disc; they keep the text of the "
+                                             "row they copy."),
+                                           Quote(file.modName).c_str()));
         }
         continue;
       }
@@ -502,10 +518,10 @@ private:
     }
   }
   static std::string Where(const DataModFile& file, size_t line) {
-    return file.label + (line != 0 ? " line " + std::to_string(line) : "");
+    return line != 0 ? Fmt(Tr("%s line %d"), file.label.c_str(), static_cast<int>(line)) : file.label;
   }
   void Problem(const DataModFile& file, size_t line, const std::string& what) {
-    Say(Message::Level::Problem, "The mod " + Quote(file.modName) + ", " + Where(file, line) + ": " + what + ".");
+    Say(Message::Level::Problem, Fmt(Tr("The mod %s, %s: %s."), Quote(file.modName).c_str(), Where(file, line).c_str(), what.c_str()));
   }
 
   Work& WorkFor(const DataPlace& p) {
@@ -776,12 +792,13 @@ private:
         }
         if (BothBuiltIn(it->mod, file)) {
         } else if (it->mod != file.mod) {
-          Say(Message::Level::Warning, "Conflict: the mods " + Quote(ModName(it->mod)) + " and " + Quote(file.modName) +
-                                           " both change " + label + " of " + EntryText(t, entry) + ". " +
-                                           Quote(file.modName) + " (further down the list) is used.");
+          Say(Message::Level::Warning, Fmt(Tr("Conflict: the mods %s and %s both change %s of %s. %s (further down the list) is used."),
+                                           Quote(ModName(it->mod)).c_str(), Quote(file.modName).c_str(), label.c_str(),
+                                           EntryText(t, entry).c_str(), Quote(file.modName).c_str()));
         } else if (it->where != where) {
-          Say(Message::Level::Warning, "The mod " + Quote(file.modName) + " sets " + label + " of " + EntryText(t, entry) +
-                                           " twice (" + it->where + " and " + where + "); the second is used.");
+          Say(Message::Level::Warning, Fmt(Tr("The mod %s sets %s of %s twice (%s and %s); the second is used."),
+                                           Quote(file.modName).c_str(), label.c_str(), EntryText(t, entry).c_str(),
+                                           it->where.c_str(), where.c_str()));
         }
         it->bits &= static_cast<uint8_t>(~bits);
         it = it->bits == 0 ? owners.erase(it) : it + 1;

@@ -43,6 +43,7 @@ struct GameInfo {
   std::string windowTitle;
   std::string subtitle;
   std::string gameId;
+  std::string textureGameId;
   std::string discHelp;
   std::filesystem::path settingsFolder;
   std::filesystem::path modsFolder;
@@ -100,6 +101,13 @@ struct GameInfo {
     std::string name;
     std::filesystem::path cardFolder;
     std::string cardFileName;
+    std::vector<uint8_t> gci;
+    SaveSummary preview;
+  };
+  struct ImportOffer {
+    std::filesystem::path path;
+    std::string where;
+    ImportCheck check;
   };
   struct Saves {
     std::filesystem::path dataFolder;
@@ -108,7 +116,49 @@ struct GameInfo {
     std::function<SaveSummary(const std::filesystem::path& cardRoot, const std::string& discPath)> read;
     std::function<std::filesystem::path(const std::filesystem::path& cardRoot, const std::string& card)> cardFolder;
     std::function<std::filesystem::path(const std::filesystem::path& cardRoot)> saveFile;
-    std::function<bool(const std::filesystem::path& file, ImportCheck& out, std::string& error)> checkImport;
+    std::function<bool(const std::filesystem::path& file, const std::string& discPath, ImportCheck& out,
+                       std::string& error)>
+        checkImport;
+    std::function<std::vector<ImportOffer>(const std::string& discPath)> findImportable;
+    struct TradeMon {
+      std::string species, nickname, level, item;
+      std::string problem;
+    };
+    struct TradeView {
+      std::string mineWho, theirsWho;
+      std::vector<TradeMon> mine, theirs;
+      std::vector<std::string> notes;
+    };
+    struct TradeResult {
+      bool ok = false;
+      std::string message;
+    };
+    std::function<bool(const std::filesystem::path& cardRoot, const std::filesystem::path& file,
+                       const std::string& discPath, TradeView& out, std::string& error)>
+        tradeOpen;
+    std::function<TradeResult(const std::filesystem::path& cardRoot, const std::filesystem::path& file,
+                              const std::string& discPath, int mineSlot, int theirSlot)>
+        tradeDo;
+    struct MonRow {
+      std::string where, species, nickname, level;
+      std::string problem;
+      std::vector<std::string> lost;
+    };
+    struct MonsView {
+      std::string who;
+      std::vector<MonRow> rows;
+      std::vector<std::string> notes;
+      int room = 0;
+    };
+    std::function<bool(const std::filesystem::path& cardRoot, const std::filesystem::path& file, const std::string& discPath,
+                       MonsView& out, std::string& error)>
+        monsOpen;
+    std::function<TradeResult(const std::filesystem::path& cardRoot, const std::filesystem::path& file,
+                              const std::string& discPath, const std::vector<int>& rows)>
+        monsDo;
+    std::string monsName = "Colosseum import";
+    std::string tradeFileTypes = "sav";
+    std::string tradeName = "GBA trade";
     std::string exportName = "save.gci";
     std::filesystem::path binFolder;
   } saves;
@@ -122,6 +172,10 @@ struct GameInfo {
     std::string discSetting;
     std::string manifestId;
     std::string switchSetting;
+    std::string modelsFolder = "fsys";
+    bool needsGameDisc = true;
+    std::string contentsFile;
+    std::string doneText;
     std::string converterStem;
     std::string converterFolder;
     std::string converterOverrideEnv;
@@ -136,7 +190,14 @@ struct GameInfo {
     std::vector<ExtraSource> sources;
     std::function<bool(const std::string& path, std::string& gameId, std::string& title, std::string& error)>
         identifyDisc;
+    std::function<bool(const std::string& gameId)> otherVersion;
   } extra;
+  struct Languages {
+    std::string setting;
+    std::function<std::vector<std::pair<std::string, std::string>>()> offered;
+    std::string noPackHint;
+    std::string whenHint;
+  } languages;
   struct Updates {
     std::string version;
     std::string feedUrl;

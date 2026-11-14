@@ -20,6 +20,22 @@ void Register(es::Registry& registry) {
                       "Chamber). 1 is the original.",
                       1, 10, 1, 1)
                    .ForGames({kGameId}));
+  registry.Add(D::Enum("system.language", C::System, "Language",
+                       "The language of the game's texts, menus and pictures. English (US) is the USA game as it is. The "
+                       "others come from the European (PAL) copy of the game, added on the launcher's Extra assets page "
+                       "(\"Languages (from the European disc)\"); a language the pack doesn't have falls back to English. "
+                       "Applies the next time the game starts. It changes only text and pictures, not how the game plays.",
+                       {{"us", "English (US)"}, {"ge", "German"}, {"fr", "French"}, {"it", "Italian"}, {"sp", "Spanish"}}, "us", "us")
+                   .Preference()
+                   .ForGames({kGameId})
+                   .Implemented());
+  registry.Add(D::Text("system.extra_disc.languages", C::System, "European disc image (for languages)",
+                       "The European (PAL) Pokemon XD disc image the launcher's Extra assets page makes the language "
+                       "pack from (empty: none chosen yet).",
+                       "", "")
+                   .Preference()
+                   .ForGames({kGameId})
+                   .Implemented());
   registry.Add(D::Bool("system.dev_menu", C::System, "Developer menu (cheats)",
                        "F9 opens a menu of the developers' own debug tools left in the game: go to any place, any "
                        "point of the story, set story flags, start battles, get items and Pokemon. For testing; "

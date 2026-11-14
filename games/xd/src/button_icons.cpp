@@ -5,6 +5,8 @@
 #include <port_controls.h>
 #include <settings.h>
 
+#include "texture_observers.h"
+
 #include <dolphin/gx/GXEnum.h>
 
 #include <algorithm>
@@ -266,7 +268,7 @@ bool Wants(void*, const at::TextureSourceKey& key) {
   return true;
 }
 
-void Decoded(void*, const at::TextureSourceKey& key, const uint8_t* rgba, uint32_t w, uint32_t h) {
+void Decoded(void*, const at::TextureSourceKey& key, const uint8_t* rgba, uint32_t w, uint32_t h, bool) {
   const Atlas* atlas = AtlasOf(key);
   if (atlas == nullptr) return;
   std::lock_guard lk(sMutex);
@@ -380,6 +382,29 @@ extern "C" void PortXD_ButtonIconsUpdate(void) {
   std::fprintf(stderr, "[button icons] %s\n",
                device ? (std::string("pictures of: ") + ec::DeviceId(*device) + " (A = " + labels[0].text + ")").c_str()
                       : "GameCube pictures");
-  if (setObserver) at::set_source_observer({Wants, Decoded, nullptr});
-  if (clearObserver) at::set_source_observer({});
+  if (setObserver) xd::texobs::Set(xd::texobs::kButtonIcons, {Wants, Decoded, nullptr});
+  if (clearObserver) xd::texobs::Set(xd::texobs::kButtonIcons, {});
 }
+
+uint32_t PortXD_HintButtonStyle() {
+  engine::settings::Registry& reg = engine::settings::Global();
+  if (reg.Find("controls.button_icons") == engine::settings::kNoSetting) return 0;
+  const std::optional<ec::Device> device = ChosenDevice(reg);
+  return device ? 1u + static_cast<uint32_t>(*device) * 4096u + (reg.Changes() & 4095u) : 0u;
+}
+bool PortXD_HintButtonPicture(int gcInput, int w, int h, std::vector<uint8_t>& rgba, uint32_t& style) {
+  engine::settings::Registry& reg = engine::settings::Global();
+  if (gcInput < 0 || gcInput > static_cast<int>(GcInput::Start) || reg.Find("controls.button_icons") == engine::settings::kNoSetting) return false;
+  const std::optional<ec::Device> device = ChosenDevice(reg);
+  if (!device) return false;
+  const ec::ButtonLabel label = ec::GcInputLabel(ec::ReadPort(reg, 0), static_cast<GcInput>(gcInput), *device);
+  if (port_button_art::KindOf(label) == port_button_art::Kind::None) return false;
+  style = PortXD_HintButtonStyle();
+  rgba.assign(static_cast<size_t>(w) * h * 4, 0);
+  port_button_art::Font font;
+  font.glyph = GameGlyph;
+  port_button_art::Draw(label, rgba.data(), w * 4, 0, 0, w, h, &font, true);
+  return true;
+}
+
+bool PortXD_GameGlyph(char32_t ch, std::vector<uint8_t>& alpha, int& w, int& h) { return GameGlyph(ch, alpha, w, h); }

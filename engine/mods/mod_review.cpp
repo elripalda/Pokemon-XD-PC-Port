@@ -1,7 +1,11 @@
 #include "mods.h"
 
+#include "i18n.h"
+
 #include <algorithm>
 #include <cctype>
+#include <cstdarg>
+#include <cstdio>
 #include <map>
 #include <set>
 
@@ -10,6 +14,17 @@ namespace engine::mods {
 namespace fs = std::filesystem;
 
 namespace {
+
+using engine::i18n::Tr;
+
+std::string Fmt(const char* format, ...) {
+  char buf[2048];
+  va_list args;
+  va_start(args, format);
+  std::vsnprintf(buf, sizeof(buf), format, args);
+  va_end(args);
+  return buf;
+}
 
 std::string Lower(std::string_view s) {
   std::string out(s);
@@ -72,6 +87,7 @@ std::string FirstOf(const std::vector<std::string>& names) {
 
 ModChanges ChangesOf(const ModFolder& mod) {
   ModChanges c;
+  if (mod.texturePack) return c;
   c.files = FilesIn(mod.folder / "files");
   c.entries = FilesIn(mod.folder / "fsys");
   for (const std::string& f : FilesIn(mod.folder / "data")) {
@@ -110,15 +126,15 @@ Review ReviewList(const ModList::Profile& profile, const std::vector<ModFolder>&
   for (size_t i = 0; i < review.rows.size(); i++) {
     ReviewRow& row = review.rows[i];
     if (row.mod == nullptr) {
-      row.problems.push_back("Not in the mods folder any more (left in the list; it isn't used).");
+      row.problems.push_back(Tr("Not in the mods folder any more (left in the list; it isn't used)."));
       continue;
     }
     const std::vector<std::string>& games = row.mod->manifest.games;
     if (!gameId.empty() && std::none_of(games.begin(), games.end(), [&](const std::string& g) { return Same(g, gameId); })) {
       std::string list;
       for (const std::string& g : games) list += (list.empty() ? "" : ", ") + g;
-      row.problems.push_back("Made for another game or game version (" + list + "); this disc is " + std::string(gameId) +
-                             ". It isn't used.");
+      row.problems.push_back(Fmt(Tr("Made for another game or game version (%s); this disc is %s. It isn't used."), list.c_str(),
+                                 std::string(gameId).c_str()));
       continue;
     }
     if (row.on) alive.push_back(i);
@@ -138,15 +154,17 @@ Review ReviewList(const ModList::Profile& profile, const std::vector<ModFolder>&
         if (it != alive.end() && k < m.requiredVersions.size() &&
             !m.requiredVersions[k].SatisfiedBy(review.rows[*it].mod->manifest.version)) {
           const VersionNeed& v = m.requiredVersions[k];
-          drop(a, "Needs \"" + review.rows[*it].mod->manifest.name + "\" in version " + v.op + " " + v.version + ", but the one in the mods "
-                  "folder is " + (review.rows[*it].mod->manifest.version.empty() ? std::string("without a version")
-                                                                                   : "version " + review.rows[*it].mod->manifest.version) +
-                  ". Not used.");
+          const std::string& have = review.rows[*it].mod->manifest.version;
+          drop(a, have.empty() ? Fmt(Tr("Needs \"%s\" in version %s %s, but the one in the mods folder is without a version. Not used."),
+                                     review.rows[*it].mod->manifest.name.c_str(), v.op.c_str(), v.version.c_str())
+                               : Fmt(Tr("Needs \"%s\" in version %s %s, but the one in the mods folder is version %s. Not used."),
+                                     review.rows[*it].mod->manifest.name.c_str(), v.op.c_str(), v.version.c_str(), have.c_str()));
           changed = true;
         } else if (it == alive.end()) {
           const ModFolder* other = findMod(need);
-          drop(a, "Needs the mod \"" + (other != nullptr ? other->manifest.name : need) + "\", which is " +
-                      (other != nullptr ? "not on (or can't be used)" : "not in the mods folder") + ". Not used.");
+          const std::string needName = other != nullptr ? other->manifest.name : need;
+          drop(a, other != nullptr ? Fmt(Tr("Needs the mod \"%s\", which is not on (or can't be used). Not used."), needName.c_str())
+                                   : Fmt(Tr("Needs the mod \"%s\", which is not in the mods folder. Not used."), needName.c_str()));
           changed = true;
         }
       }
@@ -156,8 +174,8 @@ Review ReviewList(const ModList::Profile& profile, const std::vector<ModFolder>&
           return std::any_of(ids.begin(), ids.end(), [&](const std::string& x) { return Same(x, id); });
         };
         if (names(m.conflicts, earlier.id) || names(earlier.conflicts, m.id)) {
-          drop(a, "Can't be used together with \"" + earlier.name + "\" (" + (names(m.conflicts, earlier.id) ? m.name : earlier.name) +
-                      " says so); this one, further down the list, isn't used.");
+          drop(a, Fmt(Tr("Can't be used together with \"%s\" (%s says so); this one, further down the list, isn't used."),
+                      earlier.name.c_str(), (names(m.conflicts, earlier.id) ? m.name : earlier.name).c_str()));
           changed = true;
         }
       }
@@ -169,7 +187,8 @@ Review ReviewList(const ModList::Profile& profile, const std::vector<ModFolder>&
       for (size_t b = a + 1; b < alive.size(); b++) {
         const Manifest& later = review.rows[alive[b]].mod->manifest;
         if (Same(later.id, want)) {
-          review.rows[alive[a]].warnings.push_back("Wants to come after \"" + later.name + "\": move it further down the list.");
+          review.rows[alive[a]].warnings.push_back(
+              Fmt(Tr("Wants to come after \"%s\": move it further down the list."), later.name.c_str()));
         }
       }
     }
@@ -182,10 +201,10 @@ Review ReviewList(const ModList::Profile& profile, const std::vector<ModFolder>&
       if (shared.empty()) continue;
       const std::string& nameA = review.rows[alive[a]].mod->manifest.name;
       const std::string& nameB = review.rows[alive[b]].mod->manifest.name;
-      review.rows[alive[a]].warnings.push_back("Clashes with \"" + nameB + "\" over " + FirstOf(shared) + ": \"" + nameB +
-                                               "\", further down the list, wins.");
-      review.rows[alive[b]].warnings.push_back("Clashes with \"" + nameA + "\" over " + FirstOf(shared) +
-                                               ": this one, further down the list, wins.");
+      review.rows[alive[a]].warnings.push_back(Fmt(Tr("Clashes with \"%s\" over %s: \"%s\", further down the list, wins."),
+                                                   nameB.c_str(), FirstOf(shared).c_str(), nameB.c_str()));
+      review.rows[alive[b]].warnings.push_back(Fmt(Tr("Clashes with \"%s\" over %s: this one, further down the list, wins."),
+                                                   nameA.c_str(), FirstOf(shared).c_str()));
     }
   }
   return review;

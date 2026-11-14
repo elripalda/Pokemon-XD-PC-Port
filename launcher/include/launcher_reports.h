@@ -12,6 +12,7 @@ struct File {
   std::string name;
   uint64_t size = 0;
   std::string description;
+  std::string english;
   bool dump = false;
   bool text = false;
 };
@@ -79,12 +80,14 @@ struct BundleFile {
   std::filesystem::path from;
   uint64_t size = 0;
   std::string description;
+  std::string english;
   bool text = false;
 };
 struct SessionBundle {
   std::vector<BundleFile> files;
   uint64_t size = 0;
   std::string choice;
+  std::string choiceEnglish;
   bool withPrevious = false;
 };
 SessionBundle BundleFor(const std::vector<Session>& sessions, size_t index, const std::filesystem::path& settingsIni,

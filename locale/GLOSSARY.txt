@@ -1,0 +1,41 @@
+Glossary for the translations of the port's own texts (locale/fr.txt, de.txt, it.txt, es.txt)
+=================================================================================================
+All four files are machine-made (by an AI) and need a native speaker's check. Please keep these words the same
+everywhere, so the port reads like the official games. Edit the part after "> " in the language file only.
+
+English            French               German               Italian              Spanish
+------------------ -------------------- -------------------- -------------------- --------------------
+Pokemon (written   POKéMON / Pokémon    POKéMON / Pokémon    POKéMON / Pokémon    POKéMON / Pokémon
+ with e-acute)
+Shadow Pokemon     Pokémon Obscur       Crypto-Pokémon       Pokémon Ombra        Pokémon Oscuro
+Purify             Purifier             Läutern              Purificare           Purificar
+Poke Ball          Poké Ball            Pokéball             Poké Ball            Poké Ball
+Save (the game)    Sauvegarder          Speichern            Salvare              Guardar
+Settings           Paramètres           Einstellungen        Impostazioni         Ajustes
+Options            Options              Optionen             Opzioni              Opciones
+Memory card        Carte mémoire        Memory Card          Memory Card          Tarjeta de memoria
+Disc (game disc)   disque               Disc                 disco                disco
+Mods               mods                 Mods                 mod                  mods
+Original (preset)  Original             Original             Originale            Original
+Enhanced (preset)  Amélioré             Verbessert           Potenziato           Mejorado
+Custom (preset)    Personnalisé         Benutzerdefiniert    Personalizzato       Personalizado
+Launcher           lanceur              Launcher             launcher             lanzador
+Controller         manette              Controller           controller           mando
+Battle             combat               Kampf                lotta                combate
+Trainer            Dresseur             Trainer              Allenatore           Entrenador
+Fairy (type)       Fée                  Fee                  Folletto             Hada
+
+Types: Normal / Fire Feu Feuer Fuoco Fuego / Water Eau Wasser Acqua Agua / Grass Plante Pflanze Erba Planta /
+Electric Électrik Elektro Elettro Eléctrico / Ice Glace Eis Ghiaccio Hielo / Fighting Combat Kampf Lotta Lucha /
+Poison Poison Gift Veleno Veneno / Ground Sol Boden Terra Tierra / Flying Vol Flug Volante Volador /
+Psychic Psy Psycho Psico Psíquico / Bug Insecte Käfer Coleottero Bicho / Rock Roche Gestein Roccia Roca /
+Ghost Spectre Geist Spettro Fantasma / Dragon Dragon Drache Drago Dragón / Dark Ténèbres Unlicht Buio Siniestro /
+Steel Acier Stahl Acciaio Acero / Fairy Fée Fee Folletto Hada.
+
+Rules
+- Keep every % conversion (%d %s %u %.1f ...) and "\n" exactly, in a sensible order for the language.
+- Don't translate button / key names that are written on the keyboard (F8, Tab, Alt+Enter, Esc, Enter), file names,
+  setting ids in `backticks`, "GameCube", "Dolphin", "Wii", "Vulkan", "Direct3D", the names of programs.
+- Tone: friendly and plain, as the English. Address the player formally-neutral: French "vous", German "Sie",
+  Italian "tu" is used by Nintendo (use "tu"), Spanish "tú" is used by Nintendo (use "tú").
+- The in-game pages are narrow: keep a translation about as long as the English where you can.

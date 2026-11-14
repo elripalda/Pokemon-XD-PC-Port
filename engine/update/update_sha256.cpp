@@ -1,4 +1,5 @@
 #include "update.h"
+#include "update_internal.h"
 
 #include <cstdio>
 #include <cstring>
@@ -99,7 +100,7 @@ bool Sha256File(const std::filesystem::path& file, std::string& hex, std::string
   std::FILE* in = std::fopen(file.c_str(), "rb");
 #endif
   if (in == nullptr) {
-    error = "the downloaded package isn't there";
+    error = Tr("the downloaded package isn't there");
     return false;
   }
   Sha256 s;
@@ -110,7 +111,7 @@ bool Sha256File(const std::filesystem::path& file, std::string& hex, std::string
   const bool bad = std::ferror(in) != 0;
   std::fclose(in);
   if (bad) {
-    error = "the downloaded package couldn't be read";
+    error = Tr("the downloaded package couldn't be read");
     return false;
   }
   hex = s.Finish();

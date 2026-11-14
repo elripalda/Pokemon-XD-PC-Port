@@ -1,4 +1,5 @@
 #include "update.h"
+#include "update_internal.h"
 
 #define WIN32_LEAN_AND_MEAN
 #define NOMINMAX
@@ -51,7 +52,7 @@ struct Sink {
   bool Put(const char* data, size_t size, std::string& error) {
     done += size;
     if (done > limit) {
-      error = "the download is larger than expected";
+      error = Tr("the download is larger than expected");
       return false;
     }
     if (text != nullptr) {
@@ -59,7 +60,7 @@ struct Sink {
       return true;
     }
     if (std::fwrite(data, 1, size, file) != size) {
-      error = "the download couldn't be written to disk (is it full?)";
+      error = Tr("the download couldn't be written to disk (is it full?)");
       return false;
     }
     return true;
@@ -69,7 +70,7 @@ struct Sink {
 bool FetchFile(const fs::path& path, Sink& sink, const FetchOptions& options, std::string& error) {
   std::FILE* f = _wfopen(path.c_str(), L"rb");
   if (f == nullptr) {
-    error = "the file isn't there: " + path.string();
+    error = Fmt(Tr("the file isn't there: %s"), path.string().c_str());
     return false;
   }
   std::error_code ec;
@@ -91,14 +92,14 @@ std::string WinError(const char* what) {
   const DWORD code = GetLastError();
   std::string reason;
   switch (code) {
-  case ERROR_WINHTTP_TIMEOUT: reason = "no answer in time"; break;
-  case ERROR_WINHTTP_NAME_NOT_RESOLVED: reason = "the server's name wasn't found (offline?)"; break;
-  case ERROR_WINHTTP_CANNOT_CONNECT: reason = "couldn't connect"; break;
-  case ERROR_WINHTTP_CONNECTION_ERROR: reason = "the connection broke off"; break;
-  case ERROR_WINHTTP_SECURE_FAILURE: reason = "the server's certificate wasn't accepted"; break;
-  default: reason = "Windows error " + std::to_string(code); break;
+  case ERROR_WINHTTP_TIMEOUT: reason = Tr("no answer in time"); break;
+  case ERROR_WINHTTP_NAME_NOT_RESOLVED: reason = Tr("the server's name wasn't found (offline?)"); break;
+  case ERROR_WINHTTP_CANNOT_CONNECT: reason = Tr("couldn't connect"); break;
+  case ERROR_WINHTTP_CONNECTION_ERROR: reason = Tr("the connection broke off"); break;
+  case ERROR_WINHTTP_SECURE_FAILURE: reason = Tr("the server's certificate wasn't accepted"); break;
+  default: reason = Fmt(Tr("Windows error %d"), static_cast<int>(code)); break;
   }
-  return std::string(what) + ": " + reason;
+  return Fmt(Tr("%s: %s"), what, reason.c_str());
 }
 
 bool FetchHttp(const std::string& url, Sink& sink, const FetchOptions& options, std::string& error) {
@@ -114,7 +115,7 @@ bool FetchHttp(const std::string& url, Sink& sink, const FetchOptions& options, 
   parts.lpszExtraInfo = extra;
   parts.dwExtraInfoLength = static_cast<DWORD>(std::size(extra));
   if (!WinHttpCrackUrl(wurl.c_str(), 0, 0, &parts)) {
-    error = "the address isn't usable: " + url;
+    error = Fmt(Tr("the address isn't usable: %s"), url.c_str());
     return false;
   }
   const bool secure = parts.nScheme == INTERNET_SCHEME_HTTPS;
@@ -125,7 +126,7 @@ bool FetchHttp(const std::string& url, Sink& sink, const FetchOptions& options, 
                           WINHTTP_NO_PROXY_BYPASS, 0);
   }
   if (session == nullptr) {
-    error = WinError("no connection possible");
+    error = WinError(Tr("no connection possible"));
     return false;
   }
   WinHttpSetTimeouts(session, options.timeoutMs, options.timeoutMs, options.timeoutMs, options.timeoutMs);
@@ -141,13 +142,13 @@ bool FetchHttp(const std::string& url, Sink& sink, const FetchOptions& options, 
   HINTERNET connect = WinHttpConnect(session, host, parts.nPort, 0);
   HINTERNET request = nullptr;
   if (connect == nullptr) {
-    error = WinError("couldn't reach the server");
+    error = WinError(Tr("couldn't reach the server"));
   } else {
     const std::wstring object = std::wstring(path) + extra;
     request = WinHttpOpenRequest(connect, L"GET", object.c_str(), nullptr, WINHTTP_NO_REFERER,
                                  WINHTTP_DEFAULT_ACCEPT_TYPES, secure ? WINHTTP_FLAG_SECURE : 0);
     if (request == nullptr) {
-      error = WinError("couldn't ask the server");
+      error = WinError(Tr("couldn't ask the server"));
     }
   }
   if (request != nullptr) {
@@ -155,7 +156,7 @@ bool FetchHttp(const std::string& url, Sink& sink, const FetchOptions& options, 
     WinHttpSetOption(request, WINHTTP_OPTION_REDIRECT_POLICY, &policy, sizeof(policy));
     if (!WinHttpSendRequest(request, WINHTTP_NO_ADDITIONAL_HEADERS, 0, WINHTTP_NO_REQUEST_DATA, 0, 0, 0) ||
         !WinHttpReceiveResponse(request, nullptr)) {
-      error = WinError("the server didn't answer");
+      error = WinError(Tr("the server didn't answer"));
     } else {
       DWORD status = 0, size = sizeof(status);
       WinHttpQueryHeaders(request, WINHTTP_QUERY_STATUS_CODE | WINHTTP_QUERY_FLAG_NUMBER, WINHTTP_HEADER_NAME_BY_INDEX,
@@ -168,16 +169,16 @@ bool FetchHttp(const std::string& url, Sink& sink, const FetchOptions& options, 
         total = _wcstoui64(length, nullptr, 10);
       }
       if (status != 200) {
-        error = status == 404 ? "the server has no such file (404)" : "the server answered " + std::to_string(status);
+        error = status == 404 ? std::string(Tr("the server has no such file (404)")) : Fmt(Tr("the server answered %d"), status);
       } else if (total > sink.limit) {
-        error = "the download is larger than expected";
+        error = Tr("the download is larger than expected");
       } else {
         std::vector<char> buffer(1 << 16);
         ok = true;
         for (;;) {
           DWORD got = 0;
           if (!WinHttpReadData(request, buffer.data(), static_cast<DWORD>(buffer.size()), &got)) {
-            error = WinError("the download broke off");
+            error = WinError(Tr("the download broke off"));
             ok = false;
             break;
           }
@@ -195,7 +196,7 @@ bool FetchHttp(const std::string& url, Sink& sink, const FetchOptions& options, 
           }
         }
         if (ok && total != 0 && sink.done != total) {
-          error = "the download is incomplete";
+          error = Tr("the download is incomplete");
           ok = false;
         }
       }
@@ -217,7 +218,7 @@ bool Fetch(const std::string& url, Sink& sink, const FetchOptions& options, std:
   if (url.rfind("https://", 0) == 0 || url.rfind("http://", 0) == 0) {
     return FetchHttp(url, sink, options, error);
   }
-  error = "the address isn't usable: " + url;
+  error = Fmt(Tr("the address isn't usable: %s"), url.c_str());
   return false;
 }
 
@@ -244,19 +245,19 @@ bool FetchToFile(const std::string& url, const fs::path& file, const FetchOption
   sink.file = _wfopen(part.c_str(), L"wb");
   sink.limit = options.maxBytes;
   if (sink.file == nullptr) {
-    error = "the download couldn't be saved in " + file.parent_path().string();
+    error = Fmt(Tr("the download couldn't be saved in %s"), file.parent_path().string().c_str());
     return false;
   }
   bool ok = Fetch(url, sink, options, error);
   if (std::fclose(sink.file) != 0 && ok) {
-    error = "the download couldn't be written to disk (is it full?)";
+    error = Tr("the download couldn't be written to disk (is it full?)");
     ok = false;
   }
   if (ok) {
     fs::remove(file, ec);
     fs::rename(part, file, ec);
     if (ec) {
-      error = "the download couldn't be saved: " + ec.message();
+      error = Fmt(Tr("the download couldn't be saved: %s"), ec.message().c_str());
       ok = false;
     }
   }

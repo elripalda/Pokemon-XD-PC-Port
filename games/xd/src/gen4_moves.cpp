@@ -1,4 +1,5 @@
 #include "xd_challenges.h"
+#include "xd_gen4.h"
 #include "xd_gen4_abilities.h"
 
 #include <cstdint>
@@ -1424,7 +1425,7 @@ void PortXD_Gen4Counter(void) {
 }
 
 void PortXD_Gen4MoveTexts(void (*add)(void* ctx, uint32_t id, const char* text), void* ctx) {
-  if (!Gen4On()) return;
+  if (!Gen4On() && !xd::gen4::Loaded()) return;
   for (const MoveText& t : kMoveTexts) add(ctx, t.id, t.text);
 }
 

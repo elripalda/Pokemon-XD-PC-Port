@@ -857,6 +857,7 @@ struct AddedRowCopy {
   std::vector<uint8_t> bytes;
 };
 std::vector<AddedRowCopy> sAddedRows;
+bool sPristine = false;
 uint32_t sCounts[3] = {0, 0, 0};
 
 XDRelGlobalValue* global_named(XDCommonTables* out, const char* name) {
@@ -955,6 +956,11 @@ struct ExtraRowCopy {
   std::vector<uint32_t> sets;
 };
 std::vector<ExtraRowCopy> sExtraRows;
+struct ModernTypeRow {
+  bool on = false;
+  uint32_t kind = 0, sprite = 0, smallSprite = 0, name = 0;
+};
+ModernTypeRow sModernType;
 
 bool apply_extra_rows(Loaded* l, XDCommonTables* out, const RelPrologStore* stores, int n, std::string& problem) {
   std::vector<std::string> done;
@@ -1038,6 +1044,10 @@ bool apply_extra_rows(Loaded* l, XDCommonTables* out, const RelPrologStore* stor
 
 }
 
+static const XDCommonTables* sLiveTables = nullptr;
+extern "C" const XDCommonTables* PortXD_LiveCommonTables(void) { return sLiveTables; }
+extern "C" void PortXD_SetLiveCommonTables(const XDCommonTables* tables) { sLiveTables = tables; }
+
 extern "C" bool PortXD_CommonTableCounts(uint32_t* species, uint32_t* moves, uint32_t* items) {
   if (sCounts[0] == 0 || sCounts[1] == 0 || sCounts[2] == 0) return false;
   *species = sCounts[0], *moves = sCounts[1], *items = sCounts[2];
@@ -1068,6 +1078,10 @@ extern "C" void PortXD_SetExtraRows(const XDExtraRow* rows, size_t count) {
     c.sets.assign(rows[i].sets, rows[i].sets + rows[i].nSets * 3);
     sExtraRows.push_back(std::move(c));
   }
+}
+
+extern "C" void PortXD_SetModernType(bool on, uint32_t kind, uint32_t sprite, uint32_t smallSprite, uint32_t name) {
+  sModernType = {on, kind, sprite, smallSprite, name};
 }
 
 extern "C" void PortXD_SetMainProgramMap(const XDMainProgramAddress* map, size_t count) {
@@ -1230,14 +1244,26 @@ extern "C" bool PortXD_ConvertCommonRel(const uint8_t* relFile, size_t relSize, 
       out->pokemon_data_number = *static_cast<uint32_t*>(out->globals[g].value);
     }
   }
-  if (!sExtraRows.empty()) {
+  const std::vector<ExtraRowCopy> extraKept = sExtraRows;
+  if (sModernType.on) {
+    ExtraRowCopy c;
+    c.table = "zokusei_data";
+    c.row = 18;
+    c.count = 1;
+    c.copyOf = 16;
+    c.sets = {0, 1, sModernType.kind, 2, 2, sModernType.sprite, 4, 2, sModernType.smallSprite, 8, 4, sModernType.name};
+    sExtraRows.push_back(std::move(c));
+  }
+  if (!sExtraRows.empty() && !sPristine) {
     std::string problem;
     if (!apply_extra_rows(l, out, stores, n, problem)) {
+      sExtraRows = extraKept;
       delete l;
       return fail(error, errorSize, problem);
     }
   }
-  if (!sAddedRows.empty()) {
+  sExtraRows = extraKept;
+  if (!sAddedRows.empty() && !sPristine) {
     std::string problem;
     if (!apply_added_rows(l, out, stores, n, problem)) {
       delete l;
@@ -1257,7 +1283,7 @@ extern "C" bool PortXD_ConvertCommonRel(const uint8_t* relFile, size_t relSize, 
       XDRelGlobalValue* g = global_named(out, name);
       return g != nullptr ? *static_cast<uint32_t*>(g->value) : 0;
     };
-    if (count("pokemon_data_number") != 0 && count("waza_data_number") != 0 && count("item_data_index_number") != 0) {
+    if (!sPristine && count("pokemon_data_number") != 0 && count("waza_data_number") != 0 && count("item_data_index_number") != 0) {
       sCounts[0] = count("pokemon_data_number");
       sCounts[1] = count("waza_data_number");
       sCounts[2] = count("item_data_index_number");
@@ -1268,9 +1294,9 @@ extern "C" bool PortXD_ConvertCommonRel(const uint8_t* relFile, size_t relSize, 
   return true;
 }
 
-extern "C" bool PortXD_LoadCommonRel(XDCommonTables* out, char* error, size_t errorSize) {
+static bool LoadCommonRelImpl(bool original, XDCommonTables* out, char* error, size_t errorSize) {
   size_t size = 0;
-  uint8_t* file = PortDisc_ReadFile("common.fsys", &size);
+  uint8_t* file = original ? PortDisc_ReadOriginalFile("common.fsys", &size) : PortDisc_ReadFile("common.fsys", &size);
   if (file == nullptr) {
     return fail(error, errorSize, "common.fsys not found on the disc");
   }
@@ -1287,10 +1313,15 @@ extern "C" bool PortXD_LoadCommonRel(XDCommonTables* out, char* error, size_t er
   if (relData == nullptr) {
     return fail(error, errorSize, "Could not unpack common_rel");
   }
+  sPristine = original;
   const bool ok = PortXD_ConvertCommonRel(relData, relSize, out, error, errorSize);
+  sPristine = false;
   std::free(relData);
   return ok;
 }
+
+extern "C" bool PortXD_LoadCommonRel(XDCommonTables* out, char* error, size_t errorSize) { return LoadCommonRelImpl(false, out, error, errorSize); }
+extern "C" bool PortXD_LoadCommonRelOriginal(XDCommonTables* out, char* error, size_t errorSize) { return LoadCommonRelImpl(true, out, error, errorSize); }
 
 extern "C" size_t PortXD_DescribedTables(const TableDesc* const** out) {
   *out = kDescribed;

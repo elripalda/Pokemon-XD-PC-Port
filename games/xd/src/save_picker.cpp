@@ -5,6 +5,7 @@
 #include "xd_user_folder.h"
 
 #include <gc_memcard.h>
+#include <i18n.h>
 #include <port_window_shot.h>
 #include <playthrough.h>
 #include <randomizer.h>
@@ -131,9 +132,15 @@ void Drive(PADStatus* status, int menuId, bool titleOpen, int select) {
   }
   if (pad == nullptr) return;
   sTick++;
+  static bool titleSeen = false;
+  if (titleOpen) titleSeen = true;
   if (!titleOpen) {
     sSettle = 0;
     if (menuId == kTitleMenuId) return;
+    if (titleSeen) {
+      if (sPressed > 0) Done(sIntent == Intent::NewGame ? "NEW GAME pressed" : "CONTINUE pressed");
+      return;
+    }
     if (sNewGamePressed) return;
     if ((sTick / 4) % 2 == 0) pad->button |= PAD_BUTTON_A;
     return;
@@ -179,10 +186,10 @@ std::string RandomizerStyle(const std::string& code) {
   std::string decodeError;
   if (code.empty() || !engine::randomizer::DecodeCode(xr::GetSchema(), code, rs, seedOnly, decodeError)) return {};
   switch (xr::StyleOf(rs)) {
-  case xr::Style::Light: return "Light";
-  case xr::Style::Classic: return "Classic";
-  case xr::Style::Chaos: return "Chaos";
-  default: return "Custom";
+  case xr::Style::Light: return engine::i18n::Tr("Light");
+  case xr::Style::Classic: return engine::i18n::Tr("Classic");
+  case xr::Style::Chaos: return engine::i18n::Tr("Chaos");
+  default: return engine::i18n::Tr("Custom");
   }
 }
 
@@ -240,9 +247,9 @@ bool ReadRow(const fs::path& root, Row& row) {
   ep::Setup setup;
   std::error_code ec;
   if (!fs::exists(xd::playthrough::SetupFileFor(id), ec)) {
-    label = "Faithful \xC2\xB7 Vanilla \xC2\xB7 no setup file (a save from Dolphin, a GameCube or an older port)";
+    label = engine::i18n::Tr("Faithful \xC2\xB7 Vanilla \xC2\xB7 no setup file (a save from Dolphin, a GameCube or an older port)");
   } else if (!ep::ReadFile(xd::playthrough::SetupFileFor(id), setup, error)) {
-    label = "its setup file can't be read";
+    label = engine::i18n::Tr("its setup file can't be read");
   } else {
     label = ep::Label(setup);
     const std::string style = RandomizerStyle(setup.seed);
@@ -257,6 +264,11 @@ bool ReadRow(const fs::path& root, Row& row) {
   return true;
 }
 
+}
+
+bool RowOf(const fs::path& root, Row& row) {
+  row.root = root;
+  return ReadRow(root, row);
 }
 
 std::vector<Row> Rows() {
@@ -350,6 +362,10 @@ void PictureArrived(void* ctx, const uint8_t* rgba, uint32_t w, uint32_t h) {
   if (ctx == &sKeepTag) {
     std::lock_guard<std::mutex> lock(sThumbLock);
     sKeepBusy = false;
+    if (!MenuClosed()) {
+      if (EnvIs("XD_THUMBNAIL_LOG", "1")) std::fprintf(stderr, "[thumbnail] field picture dropped: a window opened before it came back\n");
+      return;
+    }
     if (rgba != nullptr && w > 0 && h > 0) {
       sHist.emplace_back(sKeepStamp, th::Shrink(rgba, w, h));
       if (sHist.size() > 12) sHist.erase(sHist.begin());
@@ -426,11 +442,11 @@ void ThumbnailFrame() {
   else if (grab) PortShot_GamePicture(PictureArrived, file.empty() ? static_cast<void*>(&sKeepTag) : nullptr);
 }
 
-Picture LoadThumbnail(const fs::path& file) {
+Picture LoadThumbnail(const fs::path& file, bool keepAlpha) {
   Picture out;
   th::Picture p;
   std::string error;
-  if (!th::ReadFile(file, p, error)) return out;
+  if (!th::ReadFile(file, p, error, keepAlpha)) return out;
   out.width = p.width, out.height = p.height, out.rgba = std::move(p.rgba);
   return out;
 }

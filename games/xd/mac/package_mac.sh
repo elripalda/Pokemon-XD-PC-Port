@@ -6,7 +6,8 @@
 #   defaults: build/mac/mac-release/bin   dist
 #
 # Result:  <out>/Pokemon XD PC <version> - Mac (test)/Pokemon XD.app + Read me.txt
-#          <out>/Pokemon XD PC <version> - Mac (test).zip
+#          <out>/Pokemon XD PC <version> - Mac (test).zip  = Pokemon XD.app ALONE at the top (0.4.2 launchers update from
+#          that shape only; the Read me is inside the app too)
 # The app holds the launcher (xd_launcher: the app's main program, what a double-click starts), the game program
 # (xd, started by the launcher; x86_64, both run through Rosetta 2 on Apple silicon), the libraries they load and
 # the licences. No game data: the player picks his own disc image in the launcher.
@@ -114,6 +115,17 @@ if [ -x "$BIN/pbr_models" ]; then
   mkdir -p "$APP/Contents/Resources/pbr_models"
   cp "$BIN/pbr_models" "$APP/Contents/Resources/pbr_models/pbr_models"
   bundle_needs "$APP/Contents/Resources/pbr_models/pbr_models" "@executable_path/../../Frameworks"
+  # beside it: the Colosseum characters converter (engine/formats/colo, docs/COLOSSEUM_MODELS.md)
+  if [ -x "$BIN/colo_models" ]; then
+    cp "$BIN/colo_models" "$APP/Contents/Resources/pbr_models/colo_models"
+    bundle_needs "$APP/Contents/Resources/pbr_models/colo_models" "@executable_path/../../Frameworks"
+  fi
+fi
+# The language pack maker (docs/LANGUAGES.md), the same way: Contents/Resources/xd_languages/xd_languages (UNTESTED on a Mac)
+if [ -x "$BIN/xd_languages" ]; then
+  mkdir -p "$APP/Contents/Resources/xd_languages"
+  cp "$BIN/xd_languages" "$APP/Contents/Resources/xd_languages/xd_languages"
+  bundle_needs "$APP/Contents/Resources/xd_languages/xd_languages" "@executable_path/../../Frameworks"
 fi
 # (libraries of libraries: the list grows while it is worked through)
 DONE=0
@@ -124,7 +136,7 @@ done
 rm -f "$TODO" "$TODO.needs"
 # Nothing may still point into a package manager's folders (a player's Mac has none).
 LEFT=0
-for f in "$APP/Contents/MacOS/xd" "$APP/Contents/MacOS/xd_launcher" "$APP/Contents/Resources/pbr_models/pbr_models" "$FW"/*.dylib; do
+for f in "$APP/Contents/MacOS/xd" "$APP/Contents/MacOS/xd_launcher" "$APP/Contents/Resources/pbr_models/pbr_models" "$APP/Contents/Resources/pbr_models/colo_models" "$APP/Contents/Resources/xd_languages/xd_languages" "$FW"/*.dylib; do
   [ -f "$f" ] || continue
   echo "  $(basename "$f") asks for:"
   needs_of "$f" | sed 's/^/      /'
@@ -146,6 +158,10 @@ done
 if [ -d "$BIN/fonts" ]; then
   cp -R "$BIN/fonts" "$APP/Contents/Resources/fonts"
   ln -s "../Resources/fonts" "$APP/Contents/MacOS/fonts"
+fi
+if [ -x "$APP/Contents/Resources/xd_languages/xd_languages" ]; then
+  ln -s "../Resources/xd_languages" "$APP/Contents/MacOS/xd_languages"
+  echo "  xd_languages: included (the language pack maker, from $BIN)"
 fi
 # The Battle Revolution models helper (tools/pbr_convert/package_pbr_models.py, built by the workflow's step before
 # this one; PBR_MODELS_DIR names its folder): the launcher's Extra assets page looks for
@@ -178,6 +194,10 @@ for f in "$ROOT/LICENSE" "$ROOT/third_party/aurora/LICENSE" "$ROOT/third_party/S
 done
 
 sed "s/@VERSION@/$VERSION/g" "$HERE/Read me (Mac).txt" > "$DEST/Read me.txt"
+# 0.5.0: the download's zip holds ONLY the app at its top (below), because a 0.4.2 launcher installs a Mac update file
+# only in that shape (an app and nothing beside it). So the Read me also lives inside the app (Show Package Contents >
+# Contents > Resources); the copy beside the app stays in the folder for CI and for people who build it themselves.
+cp "$DEST/Read me.txt" "$APP/Contents/Resources/Read me.txt"
 
 # No game data may be inside (the same rule as every package of the port).
 if find "$DEST" \( -iname "*.iso" -o -iname "*.gcm" -o -iname "*.rvz" -o -iname "*.dol" -o -iname "*.gci" -o -iname "*.fsys" \) | grep -q .; then
@@ -220,5 +240,5 @@ codesign --verify --strict --verbose=4 "$APP" 2>&1 || echo "package_mac.sh: the 
 echo "  the app's files:"
 (cd "$DEST" && find "Pokemon XD.app" | sed 's/^/    /')
 
-(cd "$OUT" && ditto -c -k --sequesterRsrc --keepParent "$NAME" "$NAME.zip")
+(cd "$DEST" && ditto -c -k --norsrc --keepParent "Pokemon XD.app" "$OUT/$NAME.zip")
 echo "package_mac.sh: $OUT/$NAME.zip"

@@ -26,6 +26,7 @@
 #include <port_menu.h>
 #include <port_focus_pause.h>
 #include <port_fps.h>
+#include <port_speedrun.h>
 #include <port_window_icon.h>
 #include <port_folder_claim.h>
 #include <settings_c.h>
@@ -49,6 +50,9 @@
 #include <stdlib.h>
 #include <string.h>
 
+const char* PortXD_Tr(const char* english);
+#define Tr(text) PortXD_Tr(text)
+
 void XDGame_Main(int argc, char** argv);
 
 static void log_callback(AuroraLogLevel level, const char* module, const char* message, unsigned int len) {
@@ -64,10 +68,10 @@ static void log_callback(AuroraLogLevel level, const char* module, const char* m
     }
     if (len >= 11 && strncmp(message, "Device lost", 11) == 0) {
       PortMessage_Show(PORT_MESSAGE_ERROR, "Pokemon XD",
-                       "The graphics card stopped working for the game (its driver was reset or updated, the "
-                       "computer switched graphics cards, or it woke from sleep), so the game has to close.\n\n"
-                       "Start it again to carry on from your last save. A report of this was saved in the "
-                       "game's reports folder.");
+                       Tr("The graphics card stopped working for the game (its driver was reset or updated, the "
+                          "computer switched graphics cards, or it woke from sleep), so the game has to close.\n\n"
+                          "Start it again to carry on from your last save. A report of this was saved in the "
+                          "game's reports folder."));
     }
     abort();
   }
@@ -84,6 +88,8 @@ void PortDVD_SetFirstCommandTime(int64_t microseconds);
 void PortInput_InstallKeyboardDefaults(void);
 void PortInput_UpdateControls(void);
 void PortInput_ControlsHandleEvent(const SDL_Event* event);
+void PortXD_InstallTexturePackSource(void);
+void PortXD_HdTexturesUpdate(void);
 void PortXD_ButtonIconsUpdate(void);
 void PortXD_SettingsSwitchesUpdate(void);
 void PortXD_LoadSettings(void);
@@ -107,9 +113,7 @@ uint32_t PortVI_GetFlipCount(void);
 void PortXD_Screenshot(void* hwnd, uint32_t field, uint32_t gameFrame);
 void PortXD_BugReport(void* hwnd, uint32_t field, uint32_t gameFrame);
 void PortXD_BugReportPoll(void);
-#if defined(__linux__) || defined(__APPLE__)
 void PortXD_GamePictureFrame(void);
-#endif
 void PortXD_BugReportSetInfo(const char* lines);
 void PortXD_BugReportSetWindow(void* hwnd);
 void PortXD_BugReportInstallAutomatic(int test);
@@ -127,6 +131,7 @@ void PortInput_SetCheckValue(const char* name, uint32_t (*value)(void), uint32_t
 bool PortXD_DevMenuInit(void);
 void PortXD_DevMenuToggle(void);
 void PortXD_DevMenuFrame(void);
+void PortXD_PcTradeFrame(void);
 void PortXD_HeapCheckFrame(void);
 void PortXD_ShadersFrame(void);
 void PortXD_TaskStacksInit(void);
@@ -195,6 +200,7 @@ static void handle_events(void) {
   PortXD_TestCrashPoll();
   PortInput_UpdateControls();
   PortXD_ButtonIconsUpdate();
+  PortXD_HdTexturesUpdate();
   PortXD_SettingsSwitchesUpdate();
 }
 
@@ -278,6 +284,7 @@ static void frame_hook(void) {
   PortGX_EndOfFrame();
   PortXD_SettingsMenuOverlay();
   PortFps_Frame(PortVI_GetFlipCount(), VIGetRetraceCount());
+  PortSpeedrun_Draw();
   PortFrameRate_BeforePresent();
   aurora_end_frame();
   PortCapture_Field();
@@ -287,12 +294,11 @@ static void frame_hook(void) {
   handle_events();
   begin_frame();
   PortFrameRate_AfterBegin();
-#if defined(__linux__) || defined(__APPLE__)
   PortXD_GamePictureFrame();
-#endif
   PortXD_HeapCheckFrame();
   PortXD_ShadersFrame();
   PortXD_DevMenuFrame();
+  PortXD_PcTradeFrame();
   PortPhoto_Frame(handle_events);
   PortFocusPause_Frame();
   PortMenu_Frame(handle_events);
@@ -444,9 +450,9 @@ int aurora_main(int argc, char** argv) {
 #endif
   char* stack = (char*)mmap(NULL, size + guard, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS | MAP_32BIT, -1, 0);
   if (stack == MAP_FAILED) {
-    return fail("Could not place the program's main stack below 4 GB (the game keeps addresses in 4 bytes). "
-                "On a Mac this means the system did not give the program its low memory: please send "
-                "the report made by first_run_report.sh.");
+    return fail(Tr("Could not place the program's main stack below 4 GB (the game keeps addresses in 4 bytes). "
+                   "On a Mac this means the system did not give the program its low memory: please send "
+                   "the report made by first_run_report.sh."));
   }
   mprotect(stack, guard, PROT_NONE);
   getcontext(&sLowContext);
@@ -507,7 +513,7 @@ int aurora_main(int argc, char** argv) {
     }
   }
   if (!PortMem_ReserveMEM1()) {
-    return fail("Could not place the game's memory at its GameCube addresses (0x80000000, 0xE0000000)");
+    return fail(Tr("Could not place the game's memory at its GameCube addresses (0x80000000, 0xE0000000)"));
   }
 #ifdef __APPLE__
   {
@@ -562,6 +568,8 @@ int aurora_main(int argc, char** argv) {
     return 1;
   }
 
+  extern void PortXD_SetDiscPath(const char* path);
+  PortXD_SetDiscPath(discPath);
   char error[512];
   size_t dolSize = 0;
   if (!PortDisc_Open(discPath, error, sizeof(error)) ||
@@ -573,11 +581,12 @@ int aurora_main(int argc, char** argv) {
   if (interactive) {
     PortXD_RememberDisc(discPath);
   }
+  PortXD_InstallTexturePackSource();
   PortXD_PlaythroughBoot();
   PortXD_LoadMods();
   PortXD_ReadTrainerLevels();
   if (!PortXD_LoadDspProgram()) {
-    return fail("MusyX's DSP program isn't in main.dol");
+    return fail(Tr("MusyX's DSP program isn't in main.dol"));
   }
   if (!PortXD_FillDiscTables(error, sizeof(error))) {
     PortXD_DiscUnusable(error);
@@ -610,10 +619,10 @@ int aurora_main(int argc, char** argv) {
         return 5;
       }
       if (PortMessage_Ask(PORT_MESSAGE_WARNING, "Pok\xC3\xA9mon XD",
-                          "Another copy of the game is already running with the same memory card.\n\n"
-                          "Two copies would overwrite each other's saves. You can quit, or play this copy "
-                          "without the memory card (it can't load or save).",
-                          "Quit", "Play without the card", true)) {
+                          Tr("Another copy of the game is already running with the same memory card.\n\n"
+                             "Two copies would overwrite each other's saves. You can quit, or play this copy "
+                             "without the memory card (it can't load or save)."),
+                          Tr("Quit"), Tr("Play without the card"), true)) {
         return 5;
       }
       PortCARD_SetUnplugged(true);
@@ -628,9 +637,10 @@ int aurora_main(int argc, char** argv) {
         PortCARD_SetUnplugged(true);
       } else {
         char message[1900];
-        snprintf(message, sizeof message, "%s\n\nYou can quit and switch the mods on again (same mods, same order), or play without "
-                 "the memory card (no save can be loaded or written this time).", bound);
-        if (PortMessage_Ask(PORT_MESSAGE_WARNING, "Pok\xC3\xA9mon XD", message, "Quit", "Play without the card", true)) {
+        snprintf(message, sizeof message, "%s\n\n%s", bound,
+                 Tr("You can quit and switch the mods on again (same mods, same order), or play without "
+                    "the memory card (no save can be loaded or written this time)."));
+        if (PortMessage_Ask(PORT_MESSAGE_WARNING, "Pok\xC3\xA9mon XD", message, Tr("Quit"), Tr("Play without the card"), true)) {
           return 5;
         }
         PortCARD_SetUnplugged(true);
@@ -736,9 +746,9 @@ int aurora_main(int argc, char** argv) {
     const AuroraInfo started = aurora_initialize(argc, argv, &config);
     const char* nullOk = getenv("XD_GPU_NULL_OK");
     if (started.backend == BACKEND_NULL && (nullOk == NULL || nullOk[0] != '1')) {
-      return fail("No usable graphics device was found, so the game could not draw anything. "
-                  "Please update the graphics driver. (Windows: Direct3D 12, Direct3D 11 or Vulkan is needed; "
-                  "Linux: Vulkan; Mac: Metal.)");
+      return fail(Tr("No usable graphics device was found, so the game could not draw anything. "
+                     "Please update the graphics driver. (Windows: Direct3D 12, Direct3D 11 or Vulkan is needed; "
+                     "Linux: Vulkan; Mac: Metal.)"));
     }
   }
 #ifdef XD_PORT_VERSION
@@ -816,7 +826,7 @@ int aurora_main(int argc, char** argv) {
   PortMem_InitOS(PortXD_ArenaLo());
   if (!aurora_dvd_open(discPath)) {
     aurora_shutdown();
-    return fail("Aurora could not open the disc for reading game files");
+    return fail(Tr("Aurora could not open the disc for reading game files"));
   }
   PortDisc_InstallOverlayInAurora();
   PortOS_SetResetShutdown(reset_shutdown);

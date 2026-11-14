@@ -12,7 +12,7 @@ add_library(launcher_imgui STATIC
 target_include_directories(launcher_imgui PUBLIC ${_imgui_dir})
 target_link_libraries(launcher_imgui PUBLIC ${AURORA_SDL3_TARGET})
 
-add_library(launcher_ui STATIC launcher_app.cpp launcher_icon.cpp launcher_reports.cpp launcher_extra.cpp)
+add_library(launcher_ui STATIC launcher_app.cpp launcher_icon.cpp launcher_reports.cpp launcher_extra.cpp launcher_pad.cpp)
 if (WIN32)
   target_sources(launcher_ui PRIVATE launcher_sys_win.cpp)
 else ()
@@ -38,7 +38,7 @@ endfunction()
 
 add_executable(launcher_reports_test tests/reports_test.cpp launcher_reports.cpp)
 target_include_directories(launcher_reports_test PRIVATE include)
-target_link_libraries(launcher_reports_test PRIVATE platform_os ZLIB::ZLIB)
+target_link_libraries(launcher_reports_test PRIVATE platform_os engine_i18n ZLIB::ZLIB)
 target_compile_options(launcher_reports_test PRIVATE ${XD_FLAG_UTF8})
 
 add_executable(pbr_models_standin tests/pbr_models_standin.cpp)

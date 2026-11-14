@@ -1,8 +1,24 @@
 #include "mods.h"
 
+#include "i18n.h"
+
+#include <cstdarg>
+#include <cstdio>
+
 namespace engine::mods {
 
 namespace {
+
+using engine::i18n::Tr;
+
+std::string Fmt(const char* format, ...) {
+  char buf[1024];
+  va_list args;
+  va_start(args, format);
+  std::vsnprintf(buf, sizeof(buf), format, args);
+  va_end(args);
+  return buf;
+}
 
 std::string_view Trim(std::string_view s) {
   while (!s.empty() && (s.front() == ' ' || s.front() == '\t')) {
@@ -66,13 +82,13 @@ ModList ParseModList(std::string_view text, std::vector<std::string>& warnings) 
     const std::string_view line = Trim(text.substr(0, nl));
     text = nl == std::string_view::npos ? std::string_view() : text.substr(nl + 1);
     number++;
-    const std::string where = std::string(kListFile) + " line " + std::to_string(number) + ": ";
+    const std::string where = Fmt(Tr("%s line %d: "), kListFile, static_cast<int>(number));
     if (line.empty() || line.front() == ';' || line.front() == '#') {
       continue;
     }
     if (line.front() == '[') {
       if (line.back() != ']') {
-        warnings.push_back(where + "a section name needs a closing ']'");
+        warnings.push_back(where + Tr("a section name needs a closing ']'"));
         section = nullptr;
         continue;
       }
@@ -81,7 +97,7 @@ ModList ParseModList(std::string_view text, std::vector<std::string>& warnings) 
         name = Trim(name.substr(8));
       }
       if (name.empty()) {
-        warnings.push_back(where + "a profile needs a name, like [profile default]");
+        warnings.push_back(where + Tr("a profile needs a name, like [profile default]"));
         section = nullptr;
         continue;
       }
@@ -99,7 +115,7 @@ ModList ParseModList(std::string_view text, std::vector<std::string>& warnings) 
     }
     const size_t eq = line.find('=');
     if (eq == std::string_view::npos) {
-      warnings.push_back(where + "expected \"<mod id> = on\" or \"= off\"");
+      warnings.push_back(where + Tr("expected \"<mod id> = on\" or \"= off\""));
       continue;
     }
     const std::string_view key = Trim(line.substr(0, eq));
@@ -108,13 +124,13 @@ ModList ParseModList(std::string_view text, std::vector<std::string>& warnings) 
       if (Lower(key) == "profile" && !value.empty()) {
         list.active = std::string(value);
       } else {
-        warnings.push_back(where + "\"" + std::string(key) + "\" outside a [profile ...] list; ignored");
+        warnings.push_back(where + Fmt(Tr("\"%s\" outside a [profile ...] list; ignored"), std::string(key).c_str()));
       }
       continue;
     }
     bool on = false;
     if (!ValidModId(key) || !ParseOnOff(value, on)) {
-      warnings.push_back(where + "expected \"<mod id> = on\" or \"= off\"; ignored");
+      warnings.push_back(where + Tr("expected \"<mod id> = on\" or \"= off\"; ignored"));
       continue;
     }
     bool seen = false;
@@ -122,7 +138,7 @@ ModList ParseModList(std::string_view text, std::vector<std::string>& warnings) 
       seen |= m.first == key;
     }
     if (seen) {
-      warnings.push_back(where + "\"" + std::string(key) + "\" is listed twice; the first line counts");
+      warnings.push_back(where + Fmt(Tr("\"%s\" is listed twice; the first line counts"), std::string(key).c_str()));
       continue;
     }
     section->mods.emplace_back(std::string(key), on);

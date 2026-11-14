@@ -2,15 +2,32 @@
 #include <xd_save_convert.h>
 
 #include "data/common_rel.h"
+#include "i18n.h"
 
 #include <port_message.h>
 
+#include <cstdarg>
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <string>
 #include <vector>
+
+namespace {
+using engine::i18n::Tr;
+std::string TrFmt(const char* format, ...) {
+  va_list args, again;
+  va_start(args, format);
+  va_copy(again, args);
+  const int n = std::vsnprintf(nullptr, 0, format, args);
+  va_end(args);
+  std::string out(static_cast<size_t>(n > 0 ? n : 0), '\0');
+  if (n > 0) std::vsnprintf(out.data(), out.size() + 1, format, again);
+  va_end(again);
+  return out;
+}
+}
 
 namespace {
 
@@ -44,15 +61,16 @@ void GuardUnknownIds(const std::vector<uint8_t>& stored) {
   if (xd::save::ReadSave(stored, save, report, error)) {
     const std::vector<std::string> unknown = xd::save::UnknownIds(save, {species, moves, items});
     if (!unknown.empty()) {
-      std::string text = "This save holds Pokemon, moves or items that this game does not have (the game has " +
-                         std::to_string(species) + " Pokemon, " + std::to_string(moves) + " moves, " + std::to_string(items) +
-                         " items):\n\n";
-      for (const std::string& u : unknown) text += "  " + u + "\n";
-      text += "\nIt was probably saved with a mod that adds Pokemon, moves or items. Start the game with that mod switched on "
-              "(same mods, same order). Nothing was read into the game and nothing on the card was changed. The game stops here.";
+      std::string list;
+      for (const std::string& u : unknown) list += "  " + u + "\n";
+      const std::string text = TrFmt(Tr("This save holds Pokemon, moves or items that this game does not have (the game has %d Pokemon, "
+                                        "%d moves, %d items):\n\n%s\nIt was probably saved with a mod that adds Pokemon, moves or items. "
+                                        "Start the game with that mod switched on (same mods, same order). Nothing was read into the "
+                                        "game and nothing on the card was changed. The game stops here."),
+                                     static_cast<int>(species), static_cast<int>(moves), static_cast<int>(items), list.c_str());
       std::fprintf(stderr, "[save guard] STOP: %s\n", text.c_str());
       std::fflush(stderr);
-      PortMessage_Show(PORT_MESSAGE_ERROR, "Pokemon XD - this save needs its mods", text.c_str());
+      PortMessage_Show(PORT_MESSAGE_ERROR, Tr("Pokemon XD - this save needs its mods"), text.c_str());
       std::fprintf(stderr, "[save guard] exit code 6\n");
       std::fflush(stderr);
       std::_Exit(6);

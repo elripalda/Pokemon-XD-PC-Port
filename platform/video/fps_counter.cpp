@@ -43,6 +43,7 @@ namespace {
 std::mutex sNoticeLock;
 std::string sNotice;
 uint64_t sNoticeUntil = 0;
+bool (*sNoticeDrawer)(const char*) = nullptr;
 
 void draw_notice() {
   std::lock_guard<std::mutex> lock(sNoticeLock);
@@ -51,6 +52,7 @@ void draw_notice() {
     sNotice.clear();
     return;
   }
+  if (sNoticeDrawer != nullptr && sNoticeDrawer(sNotice.c_str())) return;
   ImDrawList* dl = ImGui::GetForegroundDrawList();
   ImFont* font = ImGui::GetFont();
   float px = ImGui::GetIO().DisplaySize.y / 36.f;
@@ -69,6 +71,11 @@ extern "C" void PortVideo_Notice(const char* text, double seconds) {
   std::lock_guard<std::mutex> lock(sNoticeLock);
   sNotice = text != nullptr ? text : "";
   sNoticeUntil = SDL_GetPerformanceCounter() + static_cast<uint64_t>(seconds * static_cast<double>(SDL_GetPerformanceFrequency()));
+}
+
+extern "C" void PortVideo_SetNoticeDrawer(bool (*draw)(const char* text)) {
+  std::lock_guard<std::mutex> lock(sNoticeLock);
+  sNoticeDrawer = draw;
 }
 
 extern "C" void PortFps_Frame(uint32_t gamePictures, uint32_t fields) {

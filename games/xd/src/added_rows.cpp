@@ -1,5 +1,7 @@
 #include "xd_added_rows.h"
 #include "xd_gen4_abilities.h"
+#include "xd_modern_types.h"
+#include "xd_pc_trade.h"
 
 #include "data/common_rel.h"
 #include "data/xd_data_mods.h"
@@ -55,20 +57,24 @@ const std::map<std::string, uint64_t>& Digests() { return sDigests; }
 extern "C" void* GSmsgOpen(void* bank);
 extern "C" void PortXD_Gen4MoveTexts(void (*add)(void* ctx, uint32_t id, const char* text), void* ctx);
 
+extern "C" void* PortXD_LanguageBank(void* bank);
 extern "C" void* PortXD_MsgOpen(void* bank) {
-  void* result = GSmsgOpen(bank);
+  void* result = GSmsgOpen(PortXD_LanguageBank(bank));
   std::vector<std::pair<uint32_t, std::string>> extra;
   xd::gen4::AppendAbilityTexts(extra);
+  xd::modern::AppendTexts(extra);
   PortXD_Gen4MoveTexts(
       [](void* ctx, uint32_t id, const char* text) {
         static_cast<std::vector<std::pair<uint32_t, std::string>>*>(ctx)->emplace_back((xd::data::kAddedTextGroup << 20) | id, text);
       },
       &extra);
+  if (!sBankOpened && PortXD_PcTradeAvailable()) extra.emplace_back((xd::data::kAddedTextGroup << 20) | 0xFFE00u, "Trade with a friend online");
   if ((!sTexts.empty() || !extra.empty()) && !sBankOpened) {
     sBankOpened = true;
     std::vector<std::pair<uint32_t, std::string>> texts;
     for (const auto& t : sTexts) texts.emplace_back(t.key, t.text);
     for (auto& t : extra) texts.push_back(std::move(t));
+    std::stable_sort(texts.begin(), texts.end(), [](const auto& a, const auto& b) { return a.first < b.first; });
     xd::gen4::InstallAbilityRows();
     std::vector<uint8_t> bytes;
     std::string error;

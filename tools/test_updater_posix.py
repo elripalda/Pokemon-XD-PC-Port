@@ -379,6 +379,11 @@ def main():
         code, log, reqs = run.launcher(inst.starter, 'wait:update|shot:{shots}/2_new_version.png|quit', '2_starter_new')
         check("version 0.0.2 (player's folder, game-0.0.2)" in log, 'the start script opens version 0.0.2')
         check('You have the newest version (0.0.2)' in log, '0.0.2 checks at start: up to date')
+        # 0.5.0 renamed the start script; this fixture is the OLD folder ("Pokemon XD.sh"): it stays and the new name appears beside it
+        new_start = os.path.join(inst.root, 'Pokemon XD Launcher.sh')
+        check(os.path.isfile(new_start) and os.access(new_start, os.X_OK), 'the update adds the new start script name, executable')
+        code, log, reqs = run.launcher(new_start, 'wait:update|quit', '2_starter_newname')
+        check("version 0.0.2 (player's folder, game-0.0.2)" in log, 'the new start script name opens version 0.0.2 too')
         exe2 = os.path.join(inst.root, 'game-0.0.2', 'xd_launcher')
         code, log, reqs = run.launcher(exe2, 'update:back|quit', '2_go_back')
         check(tu.read_pointer(inst.root) == {'current': 'game', 'previous': 'game-0.0.2'}, 'Go back: the start script opens game again')

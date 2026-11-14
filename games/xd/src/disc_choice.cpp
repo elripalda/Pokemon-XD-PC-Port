@@ -86,6 +86,10 @@ extern "C" const char* PortXD_ChooseDisc(const char* given, bool interactive) {
   }
 }
 
+static std::string sDiscPath;
+extern "C" void PortXD_SetDiscPath(const char* path) { sDiscPath = path ? path : ""; }
+extern "C" const char* PortXD_DiscPath(void) { return sDiscPath.c_str(); }
+
 extern "C" void PortXD_RememberDisc(const char* path) {
   if (path == nullptr || path[0] == '\0') {
     return;

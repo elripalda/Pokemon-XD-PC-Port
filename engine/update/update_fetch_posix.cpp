@@ -42,12 +42,12 @@ bool CopyLimited(const fs::path& from, const fs::path& to, uint64_t limit, const
                  std::string& error) {
   std::ifstream in(from, std::ios::binary);
   if (!in) {
-    error = "the file isn't there: " + detail::Utf8(from);
+    error = Fmt(Tr("the file isn't there: %s"), detail::Utf8(from).c_str());
     return false;
   }
   std::ofstream out(to, std::ios::binary | std::ios::trunc);
   if (!out) {
-    error = "a file couldn't be written: " + detail::Utf8(to);
+    error = Fmt(Tr("a file couldn't be written: %s"), detail::Utf8(to).c_str());
     return false;
   }
   std::error_code ec;
@@ -57,7 +57,7 @@ bool CopyLimited(const fs::path& from, const fs::path& to, uint64_t limit, const
   while (in.read(buffer, sizeof buffer) || in.gcount() > 0) {
     done += static_cast<uint64_t>(in.gcount());
     if (done > limit) {
-      error = "the download is larger than expected";
+      error = Tr("the download is larger than expected");
       return false;
     }
     out.write(buffer, in.gcount());
@@ -95,7 +95,7 @@ bool Curl(const std::string& url, const fs::path& file, const FetchOptions& opti
                                          "-o",            outFile,         url};
   int errPipe[2];
   if (::pipe(errPipe) != 0) {
-    error = "downloading isn't possible (no pipe)";
+    error = Tr("downloading isn't possible (no pipe)");
     return false;
   }
   std::vector<char*> argv;
@@ -107,7 +107,7 @@ bool Curl(const std::string& url, const fs::path& file, const FetchOptions& opti
   if (child < 0) {
     ::close(errPipe[0]);
     ::close(errPipe[1]);
-    error = "downloading isn't possible (couldn't start curl)";
+    error = Tr("downloading isn't possible (couldn't start curl)");
     return false;
   }
   if (child == 0) {
@@ -163,13 +163,13 @@ bool Curl(const std::string& url, const fs::path& file, const FetchOptions& opti
     tooBig = true;
   }
   if (tooBig) {
-    error = "the download is larger than expected";
+    error = Tr("the download is larger than expected");
   } else if (stopped) {
     error = "stopped";
   } else if (WIFEXITED(status) && WEXITSTATUS(status) == 0) {
     return true;
   } else if (WIFEXITED(status) && WEXITSTATUS(status) == 127) {
-    error = "downloading needs the program \"curl\" (it comes with macOS; on Linux install it with your package manager)";
+    error = Tr("downloading needs the program \"curl\" (it comes with macOS; on Linux install it with your package manager)");
   } else {
     while (!errText.empty() && (errText.back() == '\n' || errText.back() == '\r')) {
       errText.pop_back();
@@ -178,7 +178,7 @@ bool Curl(const std::string& url, const fs::path& file, const FetchOptions& opti
     if (newline != std::string::npos) {
       errText.resize(newline);
     }
-    error = errText.empty() ? "the download failed" : errText;
+    error = errText.empty() ? std::string(Tr("the download failed")) : errText;
   }
   fs::remove(file, ec);
   return false;
@@ -199,7 +199,7 @@ bool FetchToFile(const std::string& url, const fs::path& file, const FetchOption
   } else if (url.rfind("http://", 0) == 0 || url.rfind("https://", 0) == 0) {
     ok = Curl(url, part, options, options.maxBytes, error);
   } else {
-    error = "the address isn't one this program downloads from";
+    error = Tr("the address isn't one this program downloads from");
     return false;
   }
   if (!ok) {
@@ -209,7 +209,7 @@ bool FetchToFile(const std::string& url, const fs::path& file, const FetchOption
   fs::rename(part, file, ec);
   if (ec) {
     fs::remove(part, ec);
-    error = "the download couldn't be saved: " + ec.message();
+    error = Fmt(Tr("the download couldn't be saved: %s"), ec.message().c_str());
     return false;
   }
   return true;
@@ -226,7 +226,7 @@ bool FetchToString(const std::string& url, const FetchOptions& options, std::str
   } else if (url.rfind("http://", 0) == 0 || url.rfind("https://", 0) == 0) {
     ok = Curl(url, temp, small, options.maxBytes, error);
   } else {
-    error = "the address isn't one this program downloads from";
+    error = Tr("the address isn't one this program downloads from");
     return false;
   }
   std::error_code ec;

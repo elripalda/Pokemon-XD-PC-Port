@@ -6,7 +6,10 @@
 
 #include <dolphin/pad.h>
 
+#include "i18n.h"
+
 #include <algorithm>
+#include <cstdarg>
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
@@ -111,6 +114,15 @@ int sThrownInBattle = 0;
 u32 sCatchArea = 0;
 
 std::vector<std::string> sMessages;
+using engine::i18n::Tr;
+std::string Fmt(const char* format, ...) {
+  char buf[512];
+  va_list args;
+  va_start(args, format);
+  std::vsnprintf(buf, sizeof buf, format, args);
+  va_end(args);
+  return buf;
+}
 void Say(const std::string& text) {
   xd::pt::RuleNote(text);
   sMessages.push_back(text);
@@ -172,11 +184,11 @@ void LevelCapTell() {
   if (sCap >= 100) {
     if (first) return;
     sRuleLog.push_back("level cap: none from here on (story point " + std::to_string(sCapStory) + ")");
-    Say("Level cap: none from here on.");
+    Say(Tr("Level cap: none from here on."));
     return;
   }
   sRuleLog.push_back("level cap " + std::to_string(sCap) + " (story point " + std::to_string(sCapStory) + ")");
-  Say("Level cap: " + std::to_string(sCap) + ". Pokemon at this level gain no more experience.");
+  Say(Fmt(Tr("Level cap: %d. Pokemon at this level gain no more experience."), static_cast<int>(sCap)));
 }
 
 void* PartyRecord(int slot) { return reinterpret_cast<void*>(heroGetStatus(nullptr, 3, static_cast<u16>(slot))); }
@@ -226,7 +238,7 @@ u32 BattleArea() {
   const u32 place = kAreaBy == AreaBy::PlaceName ? floorGetPlaceName(map) : 0;
   return place != 0 ? place : 0x10000000u + map;
 }
-std::string AreaName(u32 area) { return area >= 0x10000000u ? "map " + std::to_string(area - 0x10000000u) : GameText(area); }
+std::string AreaName(u32 area) { return area >= 0x10000000u ? Fmt(Tr("map %u"), static_cast<unsigned>(area - 0x10000000u)) : GameText(area); }
 bool AreaUsed(u32 area) { return std::find(sAreas.begin(), sAreas.end(), area) != sAreas.end(); }
 void UseArea(u32 area, const char* why) {
   if (AreaUsed(area)) return;
@@ -327,23 +339,23 @@ int PcAction(u32 msg, int box, int place, void* under, void* held) {
   const char* refused = nullptr;
   switch (msg) {
   case kPcWithdraw:
-    if (currentLost) refused = "Nuzlocke: this Pokemon is lost. It can't rejoin your party.";
+    if (currentLost) refused = Tr("Nuzlocke: this Pokemon is lost. It can't rejoin your party.");
     break;
   case kPcDeposit:
-    if (heldLost) refused = "Nuzlocke: this Pokemon is lost. It can only be put down in the last PC box.";
+    if (heldLost) refused = Tr("Nuzlocke: this Pokemon is lost. It can only be put down in the last PC box.");
     break;
   case kPcPutDown:
   case kPcSwap:
     if (heldLost && !graveyard) {
-      refused = party ? "Nuzlocke: this Pokemon is lost. It can't rejoin your party."
-                      : "Nuzlocke: this Pokemon is lost. It can only be put down in the last PC box.";
+      refused = party ? Tr("Nuzlocke: this Pokemon is lost. It can't rejoin your party.")
+                      : Tr("Nuzlocke: this Pokemon is lost. It can only be put down in the last PC box.");
       break;
     }
     if (msg == kPcPutDown) break;
     [[fallthrough]];
   case kPcMove:
     if (underLost && !graveyard && pcboxGetPokemonBoxNbEmptySlot(nullptr, kGraveyardBox) <= 0) {
-      refused = "Nuzlocke: this Pokemon is lost, and the last PC box has no room for it. It stays here.";
+      refused = Tr("Nuzlocke: this Pokemon is lost, and the last PC box has no room for it. It stays here.");
     }
     break;
   default:
@@ -390,16 +402,16 @@ void CheckParty(bool announce) {
     }
   }
   if (moved != 0) {
-    Say(moved == 1 ? "Nuzlocke: a lost Pokemon can't rejoin your party. It was moved back to the PC."
-                   : "Nuzlocke: lost Pokemon can't rejoin your party. They were moved back to the PC.");
+    Say(moved == 1 ? Tr("Nuzlocke: a lost Pokemon can't rejoin your party. It was moved back to the PC.")
+                   : Tr("Nuzlocke: lost Pokemon can't rejoin your party. They were moved back to the PC."));
   }
   if (!announce && moved == 0) return;
   if (kept != 0) {
     std::fprintf(stderr, "[challenge] nuzlocke_faint: every PC box is full: %d lost Pokemon stay in the party for now\n", kept);
-    Say("Nuzlocke: the PC boxes are full, so a lost Pokemon stays with you. Please make room.");
+    Say(Tr("Nuzlocke: the PC boxes are full, so a lost Pokemon stays with you. Please make room."));
   } else if (onlyLost) {
     std::fprintf(stderr, "[challenge] nuzlocke_faint: the party holds only lost Pokemon: the first one stays for now\n");
-    Say("Nuzlocke: your party holds only lost Pokemon. Please withdraw another Pokemon.");
+    Say(Tr("Nuzlocke: your party holds only lost Pokemon. Please withdraw another Pokemon."));
   }
 }
 
@@ -419,10 +431,10 @@ void CatchesOver() {
   if (AreaUsed(sCatchArea)) return;
   if (owned > sOwnedAtStart) {
     UseArea(sCatchArea, "a Pokemon caught there joined you");
-    Say("Nuzlocke: that was your one catch in this area (" + AreaName(sCatchArea) + ").");
+    Say(Fmt(Tr("Nuzlocke: that was your one catch in this area (%s)."), AreaName(sCatchArea).c_str()));
   } else if (kFailedThrowUsesArea) {
     UseArea(sCatchArea, "a Poke Ball was thrown there");
-    Say("Nuzlocke: that was your one try in this area (" + AreaName(sCatchArea) + ").");
+    Say(Fmt(Tr("Nuzlocke: that was your one try in this area (%s)."), AreaName(sCatchArea).c_str()));
   }
 }
 
@@ -447,7 +459,7 @@ bool BattleOver() {
   if (static_cast<int>(lost.size()) >= count) {
     std::fprintf(stderr, "[challenge] nuzlocke_faint: every party Pokemon fainted: run failed, party kept\n");
     sRuleLog.push_back("failed: every party Pokemon fainted (Nuzlocke)");
-    Say("Nuzlocke: all your Pokemon fainted. This run has failed.");
+    Say(Tr("Nuzlocke: all your Pokemon fainted. This run has failed."));
     return false;
   }
   std::sort(lost.rbegin(), lost.rend());
@@ -469,12 +481,12 @@ bool BattleOver() {
                  shadow ? " (a Shadow Pokemon)" : "", slot + 1, PartyCount());
   }
   if (moved != 0) {
-    Say("Nuzlocke: " + std::to_string(moved) + (moved == 1 ? " Pokemon fainted and was" : " Pokemon fainted and were") +
-        " moved to the last PC box.");
+    Say(moved == 1 ? std::string(Tr("Nuzlocke: 1 Pokemon fainted and was moved to the last PC box."))
+                   : Fmt(Tr("Nuzlocke: %d Pokemon fainted and were moved to the last PC box."), moved));
   }
   if (kept != 0) {
     sRuleLog.push_back("failed: the PC boxes were full, a fainted Pokemon could not be put away (Nuzlocke)");
-    Say("Nuzlocke: the PC boxes are full, so a fainted Pokemon stays with you. This run has failed.");
+    Say(Tr("Nuzlocke: the PC boxes are full, so a fainted Pokemon stays with you. This run has failed."));
   }
   return kept != 0;
 }
@@ -483,24 +495,29 @@ bool BattleOver() {
 
 const std::vector<Rule>& Rules() {
   static const std::vector<Rule> rules = {
-      {"no_battle_items", "No items in battle",
-       "In battles the bag only gives Poke Balls: no potions, no status healers, no X items. Snagging stays possible."},
-      {"nuzlocke_faint", "Nuzlocke: fainted is lost",
-       "A Pokemon of yours that faints is moved to the last PC box when the battle is over, even if it was revived, and "
-       "can't join your party again. If all of them faint, the run has failed."},
-      {"nuzlocke_one_per_area", "Nuzlocke: one catch per area",
-       "In each area you may catch one Pokemon of your choice, snagged or wild. After that, Poke Balls can't be used "
-       "in that area's battles."},
-      {"gen4_rules", "Gen 4 Pokemon and rules",
-       "The 107 Diamond/Pearl Pokemon (their models, cries and names) and 113 moves, made from your own Pokemon Battle Revolution "
+      {"no_battle_items", [] { return Tr("No items in battle"); },
+       [] { return Tr("In battles the bag only gives Poke Balls: no potions, no status healers, no X items. Snagging stays possible."); }},
+      {"nuzlocke_faint", [] { return Tr("Nuzlocke: fainted is lost"); },
+       [] { return Tr("A Pokemon of yours that faints is moved to the last PC box when the battle is over, even if it was revived, and "
+       "can't join your party again. If all of them faint, the run has failed."); }},
+      {"nuzlocke_one_per_area", [] { return Tr("Nuzlocke: one catch per area"); },
+       [] { return Tr("In each area you may catch one Pokemon of your choice, snagged or wild. After that, Poke Balls can't be used "
+       "in that area's battles."); }},
+      {"gen4_rules", [] { return Tr("Gen 4 Pokemon and rules"); },
+       [] { return Tr("The 107 Diamond/Pearl Pokemon (their models, cries and names) and 113 moves, made from your own Pokemon Battle Revolution "
        "disc, and the rules they need: abilities (Technician, Adaptability, Iron Fist, Scrappy...) and the new effects of moves "
-       "such as U-turn and Trick Room."},
-      {"gen4_spots", "Gen 4 Pokemon at the Poke Spots",
-       "With the Gen 4 Pokemon: the three Poke Spots (Rock, Oasis, Cave) offer nine of them instead of their usual Pokemon: "
-       "Hippopotas, Skorupi and Gible; Shellos, Cherubi and Buizel; Bronzor, Stunky and Riolu. Levels and chances stay the same."},
-      {"level_cap", "Level caps",
-       "Your Pokemon can't grow past the level of the next story boss's strongest Pokemon: at the cap they gain no "
-       "experience, and Rare Candy has no effect. The cap rises when the boss is beaten."},
+       "such as U-turn and Trick Room."); }},
+      {"modern_types", [] { return Tr("Modern types (Fairy)"); },
+       [] { return Tr("The Fairy type from the later games: its place in the type chart (strong against Fighting, Dragon and Dark; weak to Poison "
+       "and Steel; Dragon moves do nothing to it), its name and picture, the Pokemon that became Fairy (Clefairy, Jigglypuff, Togepi, "
+       "Snubbull, Marill, Mr. Mime, Ralts and Mawile lines) and the moves Charm, Sweet Kiss and Moonlight. Steel no longer resists "
+       "Ghost and Dark moves. Online battles need the same choice on both sides."); }},
+      {"gen4_spots", [] { return Tr("Gen 4 Pokemon at the Poke Spots"); },
+       [] { return Tr("With the Gen 4 Pokemon: the three Poke Spots (Rock, Oasis, Cave) offer nine of them instead of their usual Pokemon: "
+       "Hippopotas, Skorupi and Gible; Shellos, Cherubi and Buizel; Bronzor, Stunky and Riolu. Levels and chances stay the same."); }},
+      {"level_cap", [] { return Tr("Level caps"); },
+       [] { return Tr("Your Pokemon can't grow past the level of the next story boss's strongest Pokemon: at the cap they gain no "
+       "experience, and Rare Candy has no effect. The cap rises when the boss is beaten."); }},
   };
   return rules;
 }
@@ -581,7 +598,7 @@ bool RefusePress(const void* activeWindow, unsigned newButtons, std::string& mes
       w->state == 2 && CursorOnUse(w)) {
     const auto* bag = static_cast<const WinWorkLayout*>(windowSearchID(kPocketMenu));
     if (bag != nullptr && (bag->cursor == kItemPocket || bag->cursor == kBerryPocket)) {
-      message = "No items in battle: only Poke Balls can be used.";
+      message = Tr("No items in battle: only Poke Balls can be used.");
       std::fprintf(stderr, "[challenge] no_battle_items: an item of pocket %d refused\n", bag->cursor);
       return true;
     }
@@ -593,8 +610,8 @@ bool RefusePress(const void* activeWindow, unsigned newButtons, std::string& mes
       const u32 area = BattleArea();
       const bool inBattle = sCaughtInBattle != 0 || (kFailedThrowUsesArea && sThrownInBattle != 0);
       if (inBattle || AreaUsed(area)) {
-        message = inBattle ? "Nuzlocke: you already had your catch in this battle. One catch per area."
-                           : "Nuzlocke: you already caught a Pokemon in this area (" + AreaName(area) + ").";
+        message = inBattle ? std::string(Tr("Nuzlocke: you already had your catch in this battle. One catch per area."))
+                           : Fmt(Tr("Nuzlocke: you already caught a Pokemon in this area (%s)."), AreaName(area).c_str());
         std::fprintf(stderr, "[challenge] nuzlocke_one_per_area: a Poke Ball refused (area %u \"%s\", caught in this battle %d)\n", area,
                      AreaName(area).c_str(), sCaughtInBattle);
         return true;
@@ -701,9 +718,12 @@ extern "C" void PortXD_HokakuFlag(void* fightPokemon, u8 value) {
   fightPokemon_SetHokakuFlag(fightPokemon, value);
 }
 
+extern "C" void PortXD_OnlineBagNote(int phase, int mode, int slot, unsigned item);
 extern "C" u16 PortXD_FightPocketOpen(s32 mode, s32* slot, void* trainer) {
   xd::challenges::sBattleBag = true;
+  PortXD_OnlineBagNote(0, mode, slot ? *slot : -1, 0);
   const u16 item = menuPocket2Open(mode, slot, trainer);
+  PortXD_OnlineBagNote(1, mode, slot ? *slot : -1, item);
   xd::challenges::sBattleBag = false;
   return item;
 }

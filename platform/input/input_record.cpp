@@ -1047,6 +1047,11 @@ u32 PortInput_PADRead(PADStatus* status) {
   return result;
 }
 
+uint16_t PortInput_DeliveredButtons(int port) {
+  std::lock_guard<std::mutex> lock(sLock);
+  return port >= 0 && port < kPorts ? sDelivered[port].button : 0;
+}
+
 void PortInput_SetCheckValue(const char* name, uint32_t (*value)(void), uint32_t everyFrames) {
   std::lock_guard<std::mutex> lock(sLock);
   sCheckName = name;

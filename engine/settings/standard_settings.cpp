@@ -90,6 +90,12 @@ std::vector<Definition> StandardSettings() {
               "carries on as if no time had passed.",
               false, true)
           .Implemented(),
+      D::Bool("video.hd_textures_dump", C::Video, "Save the game's textures (for pack makers)",
+              "Writes every texture the game uses once as a PNG with Dolphin's file name into the texture_dump "
+              "folder of the data folder, so a pack can be made from it (and works in Dolphin too). It slows the "
+              "game down while it saves. Leave off when you only play.",
+              false, false)
+          .Implemented(),
       D::Text("video.photo_mode_key", C::Video, "Photo mode key",
               "The key that opens and closes the photo mode, by its name (F8, F7, Home, P...).", "F8", "F8",
               [](std::string_view text) { return !text.empty() && text.size() <= 24; })
@@ -113,6 +119,65 @@ std::vector<Definition> StandardSettings() {
               "itself makes 30 in most places) and its speed against a GameCube (100% = full speed). Only something "
               "drawn over the picture: the game is not changed.",
               false, false)
+          .Preference()
+          .Implemented(),
+
+      D::Enum("video.speedrun_timer_position", C::Video, "Speedrun timer position",
+              "Which corner of the window the speedrun timer and its split list are drawn in (the frame rate counter "
+              "keeps the top left).",
+              {{"top_right", "Top right"}, {"top_left", "Top left"}, {"bottom_right", "Bottom right"}, {"bottom_left", "Bottom left"}},
+              "top_right", "top_right")
+          .Preference()
+          .Implemented(),
+      D::Int("video.speedrun_timer_size", C::Video, "Speedrun timer size",
+             "How big the speedrun timer is drawn, in percent of its normal size.", 50, 300, 100, 100)
+          .Preference()
+          .Implemented(),
+      D::Bool("video.speedrun_timer_splits", C::Video, "Speedrun split list",
+              "Under the timer, list the splits (the story's bosses) with the time of each one and, once you have a best "
+              "run, how far ahead or behind it you are. Off: only the timer.",
+              true, true)
+          .Preference()
+          .Implemented(),
+      D::Bool("video.speedrun_checklist", C::Video, "Speedrun 100% checklist",
+              "In the 100% category, a list of the run's requirements under the timer (Shadow Pokemon snagged and purified, Battle CD "
+              "Sim Battles, Bingo cards, ...) with what the game's own state says is done. Draw only.",
+              true, true)
+          .Preference()
+          .Implemented(),
+      D::Enum("system.speedrun_timer_new_games", C::System, "Speedrun timer for new games",
+              "The timer a NEW playthrough starts with (a save keeps its own: change it later on the SETTINGS page). "
+              "Real time counts everything from NEW GAME on (what speedruns use); Without loads takes the time the game "
+              "spends loading out of it. The timer is only drawn over the picture: it works in the Original preset and "
+              "the game plays exactly the same with it on or off.",
+              {{"off", "Off"}, {"real_time", "Real time"}, {"without_loads", "Without loads"}}, "off", "off")
+          .Preference()
+          .Implemented(),
+
+      D::Enum("system.speedrun_start", C::System, "Speedrun timer starts (Custom)",
+              "Custom category only: where a new playthrough's clock starts (a save keeps its own choice). A on NEW GAME: "
+              "choosing NEW GAME on the title menu. First control: the first moment you can move after the opening. "
+              "Confirm New Game: the YES to \"start a new story?\". The speedrun.com categories always start at Confirm New Game.",
+              {{"new_game", "A on NEW GAME"}, {"first_control", "First control"}, {"confirm", "Confirm New Game"}}, "confirm",
+              "confirm")
+          .Preference()
+          .Implemented(),
+      D::Enum("system.speedrun_category", C::System, "Speedrun category",
+              "How a new playthrough's speedrun is timed (a save keeps its own). Any%, Any% ENG and 100% follow the "
+              "speedrun.com rules: the clock starts at Confirm New Game and is real time (the port's own menus do not stop it; "
+              "only breaks do), the end is a fully black picture (Any%: before the ending cinematic; ENG: after the last "
+              "textbox), breaks only in the bag or party screen (Any%: 3 breaks, 15 minutes in all; 100%: 7 breaks, 12 hours "
+              "in all, +9 hours past 20 hours). Custom: your own start and end, the port's menus stop the clock, no breaks.",
+              {{"custom", "Custom"}, {"any", "Any%"}, {"any_eng", "Any% ENG"}, {"hundred", "100%"}}, "any", "any")
+          .Preference()
+          .Implemented(),
+      D::Enum("system.speedrun_end", C::System, "Speedrun timer ends (Custom)",
+              "Custom category only: where a new playthrough's run ends (a save keeps its own choice). Greevil defeated: the "
+              "final boss's battle is won. Credits start. Black before cinematic / black after last textbox: the speedrun.com "
+              "endings (Any% / Any% ENG), which the other categories use.",
+              {{"greevil", "Greevil defeated"}, {"credits", "Credits start"}, {"black_before", "Black before cinematic"},
+               {"black_after", "Black after last textbox"}},
+              "black_before", "black_before")
           .Preference()
           .Implemented(),
 
@@ -172,6 +237,11 @@ std::vector<Definition> StandardSettings() {
       D::Text("system.extra_disc.pbr", C::System, "Pokemon Battle Revolution disc image",
               "The Pokemon Battle Revolution disc image the launcher's Extra assets page makes the Battle Revolution "
               "models from (empty: none chosen yet).", "", "")
+          .Preference()
+          .Implemented(),
+      D::Text("system.extra_disc.colosseum", C::System, "Pokemon Colosseum disc image",
+              "The Pokemon Colosseum disc image the launcher's Extra assets page makes the Colosseum characters from "
+              "(empty: none chosen yet).", "", "")
           .Preference()
           .Implemented(),
       D::Bool("system.launcher_stays_open", C::System, "Keep the launcher open",
@@ -237,6 +307,13 @@ std::vector<Definition> StandardSettings() {
               false, false)
           .OriginalNote("physical or special by the move's type, as in every game before Diamond and Pearl.")
           .Implemented(),
+      D::Bool("gameplay.tm_move_names", C::Gameplay, "TMs show their move",
+              "TMs and HMs are listed with their move, as in the later games: \"TM01 Focus Punch\" instead of "
+              "\"TM01\" in shops, item messages and the PC. With the randomizer or Gen 4 rules it shows the move the "
+              "machine really teaches. Text only: nothing in the game changes.",
+              false, true)
+          .OriginalNote("only the machine's number (the bag's TM case shows the move as it always did).")
+          .Implemented(),
       D::Bool("gameplay.fast_forward", C::Gameplay, "Fast-forward key",
               "While the fast-forward key is held (Tab at first, or the right stick pressed in; Controls page), the "
               "whole game runs faster (Fast-forward speed) and its sound plays sped up. Only the waiting gets "
@@ -252,6 +329,13 @@ std::vector<Definition> StandardSettings() {
              "How many times faster the game runs while fast-forwarding (the key, and Fast battle animations).", 2,
              16, 4, 4)
           .Preference()
+          .Implemented(),
+      D::Bool("gameplay.skip_intro_movies", C::Gameplay, "Skip the logo movies",
+              "The two studio logo movies at the start (before the title screen) are skipped. Everything else at "
+              "the start plays as before; the game's own random numbers start from the clock, so a run that skips "
+              "them is not the same run as one that does not.",
+              false, false)
+          .OriginalNote("both logo movies play to their end.")
           .Implemented(),
       D::Bool("gameplay.run_toggle", C::Gameplay, "Run button",
               "A button switches between walking and running faster. Off: as the original.",

@@ -1,10 +1,14 @@
 #include "data/xd_data_mods.h"
+#include "i18n.h"
 #include "xd_battle_models.h"
 #include "xd_user_folder.h"
 #include "xd_playthrough_files.h"
 #include "xd_randomizer.h"
+#include "xd_starter.h"
 #include "xd_added_rows.h"
 #include "xd_gen4.h"
+#include "xd_modern_types.h"
+#include "xd_languages.h"
 #include "xd_scripts.h"
 
 #include <mods.h>
@@ -14,6 +18,25 @@
 #include <sdk_port.h>
 #include <settings.h>
 
+#include <cstdarg>
+#include <cstdio>
+#include <string>
+
+namespace {
+using engine::i18n::Tr;
+std::string TrFmt(const char* format, ...) {
+  va_list args, again;
+  va_start(args, format);
+  va_copy(again, args);
+  const int n = std::vsnprintf(nullptr, 0, format, args);
+  va_end(args);
+  std::string out(static_cast<size_t>(n > 0 ? n : 0), '\0');
+  if (n > 0) std::vsnprintf(out.data(), out.size() + 1, format, again);
+  va_end(again);
+  return out;
+}
+}
+
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -21,11 +44,21 @@
 #include <string>
 #include <vector>
 
+namespace xd::hd {
+struct Pack {
+  std::filesystem::path folder;
+  std::string name;
+  bool loose = false;
+};
+void SetPacks(std::vector<Pack> packs);
+}
+
 namespace xd::pt {
 bool BootWorldMods(std::vector<std::string>& ids);
 std::string BootRandomizer();
 bool BootGen4();
 bool BootGen4Spots();
+bool BootModernTypes();
 void RandomizerMade(const std::string& code);
 void AfterModsLoaded(const engine::mods::LoadResult& result, const std::filesystem::path& modsFolder,
                      const std::filesystem::path& listFile, const engine::mods::DiscView& disc);
@@ -56,6 +89,9 @@ bool ApplyProgramChanges(const std::vector<uint8_t>& program) {
 }
 }
 
+extern "C" const char* PortXD_LanguageText(void);
+extern "C" bool PortXD_LanguageMenuTable(void);
+
 extern "C" bool PortXD_LoadMods(void) {
   namespace em = engine::mods;
   const char* off = std::getenv("XD_MODS");
@@ -79,16 +115,30 @@ extern "C" bool PortXD_LoadMods(void) {
       options.extraLayers.push_back({xd::battle_models::kLayerId, "Battle Revolution models", modelsFolder});
     }
   }
+  if (std::strcmp(xd::languages::Active()->id, "us") != 0) {
+    const std::string name = std::string("Languages (") + xd::languages::Active()->name + ")";
+    options.extraLayers.push_back({"languages", name, xd::languages::LoadedPack().folder});
+    options.extraLayers.push_back({"languages-list", name + ", archive list",
+                                   xd::languages::LoadedPack().folder / (std::string("lang_") + xd::languages::Active()->id)});
+    if (!PortXD_LanguageMenuTable()) {
+      std::fprintf(stderr, "[languages] problem: the menu picture table of the pack could not be used\n");
+    }
+  }
   options.dataCatalog = xd::data::BuildDataCatalog;
   options.looksOrSound = xd::playthrough::LooksOrSound;
   options.usePlaythroughMods = xd::pt::BootWorldMods(options.playthroughMods);
   const std::string randomizerCode = xd::pt::BootRandomizer();
+  xd::starter::SetPlan({});
   std::vector<em::DataModFile> gen4Files;
   xd::gen4::Prepare(xd::pt::BootGen4(), xd::pt::BootGen4Spots(), options, gen4Files);
+  xd::modern::Prepare(xd::pt::BootModernTypes(), xd::gen4::Loaded(), gen4Files);
   {
     std::string layers = "base disc";
+    if (modelsOn) layers += " > Battle Revolution models";
+    if (std::strcmp(xd::languages::Active()->id, "us") != 0) layers += std::string(" > Languages (") + xd::languages::Active()->name + ")";
     if (xd::gen4::Loaded()) layers += " > Gen 4 pack";
     if (xd::gen4::SpotsLoaded()) layers += " > Gen 4 Poke Spots";
+    if (xd::modern::Loaded()) layers += " > Modern types (Fairy)";
     if (!randomizerCode.empty()) layers += " > Randomizer " + randomizerCode;
     std::fprintf(stderr, "[mods] built-in layers: %s (user mods are applied before them; conflicts are reported only for user mods)\n",
                  layers.c_str());
@@ -113,6 +163,7 @@ extern "C" bool PortXD_LoadMods(void) {
       }
       xr::Result r;
       if (!xr::Generate(catalog, read, s, r, error)) return false;
+      xd::starter::SetPlan(r.starter);
       out.push_back({xr::kModId, "Randomizer", "data/randomizer.json", r.GameJson("randomizer " + r.code), true});
       const std::filesystem::path folder = xd::CardRoot() / L"playthroughs" / L"randomizer" / r.code;
       std::string writeError;
@@ -150,36 +201,60 @@ extern "C" bool PortXD_LoadMods(void) {
     std::fprintf(stderr, "[mods] %s (mods.ini)\n", xd::kPlayerFilesReadOnlyNote);
   }
   if (result.HasWarnings()) {
-    PortMessage_Show(PORT_MESSAGE_WARNING, "Pokemon XD - mods",
-                     ("Please check your mods:\n\n" + result.Report() +
-                      "\n\nThe game starts with the mods that can be used. Mods are in " + std::string(reinterpret_cast<const char*>(
-                                                                             options.modsFolder.u8string().c_str())) +
-                      ", the list of mods that are on in mods.ini next to it.")
+    PortMessage_Show(PORT_MESSAGE_WARNING, Tr("Pokemon XD - mods"),
+                     TrFmt(Tr("Please check your mods:\n\n%s\n\nThe game starts with the mods that can be used. Mods are in %s, the "
+                              "list of mods that are on in mods.ini next to it."),
+                           result.Report().c_str(), reinterpret_cast<const char*>(options.modsFolder.u8string().c_str()))
                          .c_str());
   }
   if (!result.program.empty() && !ApplyProgramChanges(result.program)) {
     std::fprintf(stderr, "[mods] problem: the data mods' changes to main.dol's tables could not be used\n");
-    PortMessage_Show(PORT_MESSAGE_WARNING, "Pokemon XD - mods",
-                     "The mods' changes to the game program's tables could not be used. The game starts without mods.");
+    PortMessage_Show(PORT_MESSAGE_WARNING, Tr("Pokemon XD - mods"),
+                     Tr("The mods' changes to the game program's tables could not be used. The game starts without mods."));
     PortDisc_SetOverlay(nullptr, 0);
     return false;
   }
   if (!em::InstallOverlay(result)) {
-    PortMessage_Show(PORT_MESSAGE_WARNING, "Pokemon XD - mods",
-                     "The mods' files could not be prepared (was a mod changed while the game started?). "
-                     "The game starts without mods.");
+    PortMessage_Show(PORT_MESSAGE_WARNING, Tr("Pokemon XD - mods"),
+                     Tr("The mods' files could not be prepared (was a mod changed while the game started?). "
+                        "The game starts without mods."));
     return false;
   }
   sActive = result.ActiveText();
+  {
+    std::vector<em::Message> ignored;
+    const std::vector<em::ModFolder> found = em::FindMods(options.modsFolder, ignored);
+    std::vector<xd::hd::Pack> packs;
+    for (const em::Manifest& m : result.active) {
+      for (const em::ModFolder& f : found) {
+        if (f.manifest.id != m.id) continue;
+        std::error_code tec;
+        if (f.texturePack) {
+          packs.push_back({f.folder, f.manifest.name, f.looseFiles});
+        } else if (std::filesystem::is_directory(f.folder / "textures", tec)) {
+          packs.push_back({f.folder / "textures", f.manifest.name + " (textures)", false});
+        }
+      }
+    }
+    xd::hd::SetPacks(std::move(packs));
+  }
   std::fprintf(stderr, "[mods] in use: %s\n", sActive.empty() ? "none" : sActive.c_str());
+  const em::LoadResult::LayerResult* modelsLayer = nullptr;
+  for (const auto& layer : result.extraLayers) {
+    if (layer.id == xd::battle_models::kLayerId) modelsLayer = &layer;
+  }
   if (!modelsOn) {
     sExtraText = "Battle Revolution models: off";
-  } else if (result.extraLayers.empty() || !result.extraLayers.front().found) {
+  } else if (modelsLayer == nullptr || !modelsLayer->found) {
     sExtraText = "Battle Revolution models: on, but not made yet (no folder " + modelsFolder.string() + ")";
-  } else if (result.extraLayers.front().files == 0) {
+  } else if (modelsLayer->files == 0) {
     sExtraText = "Battle Revolution models: on, but its folder has no files";
   } else {
-    sExtraText = "Battle Revolution models: on, " + std::to_string(result.extraLayers.front().files) + " files";
+    sExtraText = "Battle Revolution models: on, " + std::to_string(modelsLayer->files) + " files";
+  }
+  sExtraText += std::string("; ") + PortXD_LanguageText();
+  for (const auto& layer : result.extraLayers) {
+    if (layer.id == "languages") sExtraText += " (" + std::to_string(layer.files) + " files from the pack)";
   }
   std::fprintf(stderr, "[extra assets] %s\n", sExtraText.c_str());
   xd::gen4::AfterLoad(result);

@@ -95,12 +95,16 @@ bool PortXD_LoadDolTables(const uint8_t* dol, size_t dolSize, char* error, size_
   return true;
 }
 
+static uint8_t* (*sProvider)(const char* name) = NULL;
+void PortXD_SetDolTableProvider(uint8_t* (*provider)(const char* name)) { sProvider = provider; }
+
 uint8_t* PortXD_GetDolTable(const char* name) {
   for (int i = 0; i < TABLE_COUNT; i++) {
     if (strcmp(sTables[i].name, name) == 0) {
       return sTables[i].data;
     }
   }
+  if (sProvider != NULL) return sProvider(name);
   return NULL;
 }
 

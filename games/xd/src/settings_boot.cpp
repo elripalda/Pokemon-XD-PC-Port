@@ -1,3 +1,4 @@
+#include "i18n.h"
 #include "xd_settings.h"
 #include "xd_user_folder.h"
 
@@ -12,6 +13,9 @@
 namespace {
 std::string sSummary = "settings not loaded";
 }
+
+extern "C" const char* PortXD_Tr(const char* english) { return engine::i18n::Tr(english); }
+extern "C" void PortXD_DiscVerifySetTranslator(const char* (*translate)(const char* english));
 
 extern "C" void PortXD_LoadSettings(void) {
   namespace es = engine::settings;
@@ -36,6 +40,10 @@ extern "C" void PortXD_LoadSettings(void) {
   for (const std::string& line : xd_settings::ApplyEnvironment(registry, [](const char* n) { return std::getenv(n); })) {
     std::fprintf(stderr, "[settings] %s\n", line.c_str());
   }
+  if (const size_t language = registry.Find("system.language"); language != es::kNoSetting) {
+    engine::i18n::SetLanguage(registry.ValueText(language));
+  }
+  PortXD_DiscVerifySetTranslator(PortXD_Tr);
   sSummary = registry.Summary();
   std::fprintf(stderr, "[settings] %s\n", sSummary.c_str());
   std::fflush(stderr);

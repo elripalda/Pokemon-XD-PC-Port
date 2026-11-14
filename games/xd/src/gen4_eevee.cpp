@@ -1,12 +1,23 @@
 #include "xd_challenges.h"
 #include "xd_gen4.h"
+#include "xd_starter.h"
 
+#include <port_user_folder.h>
+
+#include <game/bitfield.h>
+#include <game/gstexture.h>
 #include <game/winwork.h>
+
+#include <gx_texture_decode.h>
 
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <filesystem>
+#include <fstream>
+#include <string>
+#include <vector>
 
 extern "C" {
 int32_t PortXD_RealEevee(void);
@@ -28,6 +39,17 @@ int32_t menuFaceLoadFromID(uint16_t id, void* fn, void* arg);
 int8_t menuFaceSearchEnable(uint16_t id);
 int32_t menuFaceDispFromID3(void* window, void* sprite, uint16_t id, void* size, void* offset);
 void GSthreadSwitch(void);
+void* menuSpriteBiosGetPtr(uint32_t id);
+void* menuSpriteBiosGetValPtr(void* sprite);
+void* GSresGetResourceAllGroup(uint32_t id);
+void* GSmemAllocAlign(uint32_t size, uint32_t align);
+int32_t GStextureCreateFromMemory(void* tex, uint16_t width, uint32_t height, void* data, int32_t format, int32_t tlutFormat,
+                                  uint32_t mipLevels);
+void windowDrawSprite(int16_t x, int16_t y, void* ctx, uint16_t key, uint32_t flags, int32_t layer);
+uint8_t pokemonDataBiosGetTokuseiDataId(void* data, uint16_t index);
+uint32_t pokemonTokuseiDataBiosGetPtr(uint16_t index);
+uint32_t pokemonTokuseiDataBiosGetName(uint32_t* data);
+uint32_t pokemonTokuseiDataBiosGetDoc(uint32_t* data);
 }
 
 namespace {
@@ -75,7 +97,7 @@ constexpr int kStandInPosition = 2;
 
 uint16_t sFace[2] = {0, 0};
 
-bool Active() { return sOn && xd::challenges::Active("gen4_rules"); }
+bool Active() { return sOn && xd::challenges::Active("gen4_rules") && !xd::starter::Randomized(); }
 
 Item* Real(int idx) { return static_cast<Item*>(PortXD_RealMenuItemPtr(kEeveeMenu, static_cast<uint32_t>(idx))); }
 
@@ -133,11 +155,127 @@ void LoadFaces() {
   }
 }
 
+struct MenuSpriteView {
+  GC_BITS4(uint16_t last : 1, uint16_t fit : 1, uint16_t type : 2, uint16_t seq : 12)
+  uint8_t pad2;
+  int8_t offX, offY;
+  uint8_t alpha;
+};
+struct MenuSpriteValView {
+  int16_t u, v, w, h;
+  uint32_t tex;
+};
+
+void DumpSprites() {
+  static bool done = false;
+  const char* dir = std::getenv("XD_EEVEE_DUMP");
+  if (done || dir == nullptr) return;
+  done = true;
+  for (uint32_t key : {0x220u, 0x21Eu, 0x21Fu, 0x21Cu, 0x21Du}) {
+    const auto* info = static_cast<const MenuSpriteView*>(menuSpriteBiosGetPtr(key));
+    for (int piece = 0; info != nullptr && piece < 8; piece++) {
+      const auto* val = static_cast<const MenuSpriteValView*>(menuSpriteBiosGetValPtr(const_cast<MenuSpriteView*>(info)));
+      std::fprintf(stderr, "[eevee dump] sprite %x piece %d: type %d last %d off %d,%d alpha %d  uv %d,%d size %d x %d tex %08x\n", key, piece,
+                   info->type, info->last, info->offX, info->offY, info->alpha, val->u, val->v, val->w, val->h, val->tex);
+      const auto* tex = static_cast<const GStexture*>(GSresGetResourceAllGroup(val->tex));
+      if (tex != nullptr) {
+        const uint32_t w = GXGetTexObjWidth(&tex->texObj), h = GXGetTexObjHeight(&tex->texObj), fmt = GXGetTexObjFmt(&tex->texObj);
+        std::fprintf(stderr, "[eevee dump]   texture %u x %u format %u\n", w, h, fmt);
+        std::vector<uint8_t> rgba(static_cast<size_t>(w) * h * 4);
+        if (PortGX_DecodeTexture(GXGetTexObjData(&tex->texObj), w, h, fmt, tex->tlutData, 2, rgba.data())) {
+          char name[512];
+          std::snprintf(name, sizeof name, "%s/%x_%d.rgba", dir, key, piece);
+          if (FILE* f = std::fopen(name, "wb")) {
+            std::fwrite(&w, 4, 1, f), std::fwrite(&h, 4, 1, f), std::fwrite(rgba.data(), 1, rgba.size(), f);
+            std::fclose(f);
+          }
+        }
+      }
+      if (info->last) break;
+      info = static_cast<const MenuSpriteView*>(menuSpriteBiosGetPtr(info->seq));
+    }
+  }
+}
+
+constexpr uint32_t kOfferTexBase = 0x7F4E0000;
+constexpr uint16_t kStandInSprite = 0x21F;
+
+struct OfferPicture {
+  bool tried = false;
+  void* tex = nullptr;
+};
+OfferPicture sPicture[2];
+
+std::string OfferFile(uint32_t species) {
+  return std::string(PortUser_FolderUtf8("Pokemon XD")) + "/icons/offer/offer_" + std::to_string(species) + ".rgba";
+}
+
+void LoadOfferPicture(int k) {
+  OfferPicture& op = sPicture[k];
+  if (op.tried) return;
+  op.tried = true;
+  const std::string path = OfferFile(sSpecies[k]);
+  std::ifstream f(std::filesystem::path(std::u8string(reinterpret_cast<const char8_t*>(path.data()), path.size())), std::ios::binary);
+  if (!f) return;
+  uint32_t head[3] = {};
+  std::vector<uint8_t> px;
+  bool ok = static_cast<bool>(f.read(reinterpret_cast<char*>(head), sizeof head)) && head[0] == 0x3152464Fu && head[1] >= 4 &&
+            head[2] >= 4 && head[1] <= 256 && head[2] <= 256;
+  if (ok) {
+    px.resize(static_cast<size_t>(head[1]) * head[2] * 4);
+    ok = static_cast<bool>(f.read(reinterpret_cast<char*>(px.data()), static_cast<std::streamsize>(px.size())));
+  }
+  if (!ok) {
+    std::fprintf(stderr, "[gen4] the Eevee offer picture %s is not readable: the face is shown instead\n", path.c_str());
+    return;
+  }
+  const uint32_t w = (head[1] + 3) & ~3u, h = (head[2] + 3) & ~3u;
+  uint8_t* mem = static_cast<uint8_t*>(GSmemAllocAlign(w * h * 4, 32));
+  void* rec = GSmemAllocAlign(sizeof(GStexture), 32);
+  if (mem == nullptr || rec == nullptr) return;
+  std::memset(mem, 0, static_cast<size_t>(w) * h * 4);
+  for (uint32_t ty = 0; ty < h / 4; ty++) {
+    for (uint32_t tx = 0; tx < w / 4; tx++) {
+      uint8_t* block = mem + (static_cast<size_t>(ty) * (w / 4) + tx) * 64;
+      for (uint32_t i = 0; i < 16; i++) {
+        const uint32_t x = tx * 4 + i % 4, y = ty * 4 + i / 4;
+        if (x >= head[1] || y >= head[2]) continue;
+        const uint8_t* p = &px[(static_cast<size_t>(y) * head[1] + x) * 4];
+        block[i * 2] = p[3], block[i * 2 + 1] = p[0];
+        block[32 + i * 2] = p[1], block[32 + i * 2 + 1] = p[2];
+      }
+    }
+  }
+  if (GStextureCreateFromMemory(rec, static_cast<uint16_t>(w), h, mem, 0x45, 0, 0) == 0) return;
+  op.tex = rec;
+  std::fprintf(stderr, "[gen4] the Eevee offer picture of species %u: %s (%u x %u)\n", sSpecies[k], path.c_str(), head[1], head[2]);
+}
+
+bool DrawOfferPicture(void* window, void* sprite, int k) {
+  LoadOfferPicture(k);
+  if (sPicture[k].tex == nullptr) return false;
+  auto* info = static_cast<MenuSpriteView*>(menuSpriteBiosGetPtr(kStandInSprite));
+  if (info == nullptr || info->type != 1 || !info->last) return false;
+  auto* val = static_cast<MenuSpriteValView*>(menuSpriteBiosGetValPtr(info));
+  const MenuSpriteValView saved = *val;
+  val->tex = kOfferTexBase + static_cast<uint32_t>(k);
+  val->u = 0, val->v = 0;
+  windowDrawSprite(0, 0, window, kStandInSprite, 0, winSpriteGetLayerID(window, sprite));
+  *val = saved;
+  return true;
+}
+
 struct Size2 { int16_t x, y; };
 
 }
 
 namespace xd::gen4 {
+
+bool EeveeOfferSpecies(uint32_t& leaf, uint32_t& ice) {
+  if (!sOn || sSpecies[0] == 0 || sSpecies[1] == 0) return false;
+  leaf = sSpecies[0], ice = sSpecies[1];
+  return true;
+}
 
 void SetEeveeChoices(bool on, uint32_t leafSpecies, uint32_t leafItem, uint32_t iceSpecies, uint32_t iceItem) {
   sOn = on;
@@ -147,12 +285,24 @@ void SetEeveeChoices(bool on, uint32_t leafSpecies, uint32_t leafItem, uint32_t 
 
 }
 
+extern "C" void* PortXD_VsRowItem(int32_t menuID, uint32_t index);
+extern "C" void* PortXD_PcExtItem(uint32_t index);
 extern "C" void* menuItemBiosGetPtr(int32_t menuID, uint32_t index) {
+  if (menuID == 0x118) {
+    if (void* own = PortXD_VsRowItem(menuID, index)) return own;
+  }
+  if (index >= 31000) {
+    if (void* pc = PortXD_PcExtItem(index)) return pc;
+  }
   if (sLaidOut && index >= kExtBase && index < kExtBase + kExtCount) return &sExt[index - kExtBase];
   return PortXD_RealMenuItemPtr(menuID, index);
 }
 
 extern "C" int32_t menuScriptEevee(void) {
+  if (sOn && xd::challenges::Active("gen4_rules") && xd::starter::Randomized()) {
+    static bool said = false;
+    if (!said) std::fprintf(stderr, "[gen4] Eevee offer: the starter is randomized, the game's own five choices are shown\n"), said = true;
+  }
   if (!Active()) return PortXD_RealEevee();
   LayOut();
   LoadFaces();
@@ -166,15 +316,53 @@ extern "C" int32_t menuScriptEevee(void) {
   return pick;
 }
 
+bool AbilityTextThere(uint16_t species, bool description) {
+  void* pd = pokemonDataBiosGetPtr(species);
+  if (pd == nullptr) return false;
+  const uint8_t tid = pokemonDataBiosGetTokuseiDataId(pd, 0);
+  if (tid == 0) return true;
+  const uint32_t row = pokemonTokuseiDataBiosGetPtr(tid);
+  if (row == 0) return false;
+  auto* rowPtr = reinterpret_cast<uint32_t*>(static_cast<uintptr_t>(row));
+  const uint32_t msg = description ? pokemonTokuseiDataBiosGetDoc(rowPtr) : pokemonTokuseiDataBiosGetName(rowPtr);
+  return GSmsgGetGSchar(msg) != nullptr;
+}
+
+constexpr uint16_t kGameRowSpecies[5] = {0x86, 0x87, 0x88, 0xC5, 0xC4};
+
 extern "C" void menuScriptEeveeHook(void* wv, void* sv) {
   auto* w = static_cast<WinWorkLayout*>(wv);
   auto* sp = static_cast<SpriteWorkLayout*>(sv);
+  if (w->menuID == kEeveeMenu && (sp->id == 0x4FE || sp->id == 0x4FF)) {
+    const int row = w->cursor;
+    const uint16_t species = row >= 0 && row < 5 ? kGameRowSpecies[row]
+                             : row >= 5 && row < kRows && Active() ? static_cast<uint16_t>(sSpecies[row - 5]) : 0;
+    if (species != 0 && !AbilityTextThere(species, sp->id == 0x4FF)) {
+      static bool said = false;
+      if (!said) {
+        said = true;
+        std::fprintf(stderr, "[gen4] Eevee offer: species %u's ability has no %s text here: that line is left empty\n", species,
+                     sp->id == 0x4FF ? "description" : "name");
+      }
+      return;
+    }
+  }
   if (!Active() || w->menuID != kEeveeMenu) {
     PortXD_RealEeveeHook(wv, sv);
     return;
   }
+  DumpSprites();
   static const char* testPos = std::getenv("XD_EEVEE_TEST_POS");
-  if (testPos != nullptr) w->cursor = static_cast<int16_t>(std::atoi(testPos));
+  if (testPos != nullptr) {
+    static int frames = 0;
+    if (sp->id == 0x4EB) frames++;
+    int n = 1;
+    for (const char* c = testPos; *c != 0; c++) n += *c == ',';
+    int index = n > 1 ? (frames / 40) % n : 0;
+    const char* c = testPos;
+    while (index-- > 0 && (c = std::strchr(c, ',')) != nullptr) c++;
+    w->cursor = static_cast<int16_t>(c != nullptr ? std::atoi(c) : 0);
+  }
   static const char* testStart = std::getenv("XD_EEVEE_TEST_START");
   if (testStart != nullptr && !sStartDone) {
     w->cursor = static_cast<int16_t>(std::atoi(testStart));
@@ -199,6 +387,7 @@ extern "C" void menuScriptEeveeHook(void* wv, void* sv) {
   }
   if (pos >= 5) {
     if (id == 0x4EB) {
+      if (DrawOfferPicture(wv, sv, pos - 5)) return;
       Size2 size{80, 80}, at{15, 20};
       if (sFace[pos - 5] != 0) menuFaceDispFromID3(wv, sv, sFace[pos - 5], &size, &at);
       return;
@@ -234,4 +423,9 @@ extern "C" int32_t PortXD_EeveeGetItem(int32_t item, int32_t count) {
     return scriptGetItem(static_cast<int32_t>(real), count);
   }
   return scriptGetItem(item, count);
+}
+
+extern "C" void* PortXD_ResLookup(uint32_t id) {
+  if (id >= kOfferTexBase && id < kOfferTexBase + 2) return sPicture[id - kOfferTexBase].tex;
+  return GSresGetResourceAllGroup(id);
 }

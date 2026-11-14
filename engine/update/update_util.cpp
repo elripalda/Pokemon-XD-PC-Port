@@ -7,6 +7,19 @@
 
 #include <cstdio>
 
+#include <cstdarg>
+
+namespace engine::update {
+std::string Fmt(const char* format, ...) {
+  char buf[2048];
+  va_list args;
+  va_start(args, format);
+  std::vsnprintf(buf, sizeof(buf), format, args);
+  va_end(args);
+  return buf;
+}
+}
+
 namespace engine::update::detail {
 
 namespace fs = std::filesystem;
@@ -127,6 +140,42 @@ bool FinishUnpackedFile(const fs::path& file, uint32_t unixMode) {
 #endif
 }
 
+int RestoreExecutableBits(const fs::path& folder) {
+#if defined(_WIN32)
+  (void)folder;
+  return 0;
+#else
+  int changed = 0;
+  std::error_code ec;
+  for (fs::recursive_directory_iterator it(folder, fs::directory_options::none, ec), end; !ec && it != end; it.increment(ec)) {
+    if (it->is_symlink(ec) || !it->is_regular_file(ec)) {
+      continue;
+    }
+    struct stat st {};
+    if (::stat(it->path().c_str(), &st) != 0 || (st.st_mode & S_IXUSR) != 0) {
+      continue;
+    }
+    unsigned char head[4] = {0, 0, 0, 0};
+    if (std::FILE* f = std::fopen(it->path().c_str(), "rb")) {
+      const size_t got = std::fread(head, 1, 4, f);
+      std::fclose(f);
+      if (got < 2) {
+        continue;
+      }
+    } else {
+      continue;
+    }
+    const uint32_t m = (uint32_t(head[0]) << 24) | (uint32_t(head[1]) << 16) | (uint32_t(head[2]) << 8) | head[3];
+    const bool program = (head[0] == '#' && head[1] == '!') || m == 0x7F454C46u || m == 0xFEEDFACEu ||
+                         m == 0xFEEDFACFu || m == 0xCEFAEDFEu || m == 0xCFFAEDFEu || m == 0xCAFEBABEu;
+    if (program && ::chmod(it->path().c_str(), (st.st_mode & 07777) | S_IXUSR | S_IXGRP | S_IXOTH) == 0) {
+      changed++;
+    }
+  }
+  return changed;
+#endif
+}
+
 bool AncestorIsLink(const fs::path& root, const std::string& relative) {
   std::error_code ec;
   fs::path walked = root;
@@ -148,12 +197,12 @@ bool MakeUnpackedLink(const fs::path& root, const std::string& relative, const s
                       std::string& error) {
 #if defined(_WIN32)
   (void)root, (void)relative, (void)target;
-  error = "the package holds a link, which this system doesn't take: " + relative;
+  error = Fmt(Tr("the package holds a link, which this system doesn't take: %s"), relative.c_str());
   return false;
 #else
   std::string safe;
   if (target.empty() || target.size() > 1024 || target.front() == '/' || target.find('\0') != std::string::npos) {
-    error = "the package holds a link that isn't allowed: " + relative;
+    error = Fmt(Tr("the package holds a link that isn't allowed: %s"), relative.c_str());
     return false;
   }
   int depth = 0;
@@ -172,7 +221,7 @@ bool MakeUnpackedLink(const fs::path& root, const std::string& relative, const s
     const std::string part = target.substr(start, end - start);
     if (part == "..") {
       if (--depth < 0) {
-        error = "the package holds a link that leaves its folder: " + relative;
+        error = Fmt(Tr("the package holds a link that leaves its folder: %s"), relative.c_str());
         return false;
       }
     } else if (!part.empty() && part != ".") {
@@ -183,7 +232,7 @@ bool MakeUnpackedLink(const fs::path& root, const std::string& relative, const s
   std::error_code ec;
   fs::create_symlink(PathOf(target), root / PathOf(relative), ec);
   if (ec) {
-    error = "a link couldn't be made: " + relative + " (" + ec.message() + ")";
+    error = Fmt(Tr("a link couldn't be made: %s (%s)"), relative.c_str(), ec.message().c_str());
     return false;
   }
   return true;

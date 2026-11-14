@@ -1,3 +1,4 @@
+#include "i18n.h"
 #include <port_speedups.h>
 
 #include <controls.h>
@@ -38,8 +39,11 @@ namespace {
 
 namespace ec = engine::controls;
 namespace es = engine::settings;
+using engine::i18n::Tr;
 
 constexpr size_t kFastForward = static_cast<size_t>(ec::Action::FastForward);
+constexpr size_t kBreakAction = static_cast<size_t>(ec::Action::SpeedrunBreak);
+uint32_t sBreakKeyPresses = 0;
 
 std::vector<uint16_t> sKeysDown;
 uint32_t sKeyPresses = 0;
@@ -106,9 +110,9 @@ bool KeyHeld() {
   return false;
 }
 
-bool IsFastForwardKey(uint16_t scancode) {
+bool IsActionKey(uint16_t scancode, size_t action) {
   for (int port = 0; port < ec::kPorts; port++) {
-    for (const ec::Input& in : ActionsOf(port).keys[kFastForward]) {
+    for (const ec::Input& in : ActionsOf(port).keys[action]) {
       if (in.kind == ec::Input::Kind::Key && in.code == scancode) {
         return true;
       }
@@ -117,9 +121,11 @@ bool IsFastForwardKey(uint16_t scancode) {
   return false;
 }
 
-bool PadHeld() {
+bool IsFastForwardKey(uint16_t scancode) { return IsActionKey(scancode, kFastForward); }
+
+bool PadHeldFor(size_t action) {
   for (int port = 0; port < ec::kPorts; port++) {
-    const std::vector<ec::Input>& list = ActionsOf(port).pad[kFastForward];
+    const std::vector<ec::Input>& list = ActionsOf(port).pad[action];
     if (list.empty()) {
       continue;
     }
@@ -154,6 +160,8 @@ bool PadHeld() {
   return false;
 }
 
+bool PadHeld() { return PadHeldFor(kFastForward); }
+
 void Note(const std::string& what) { PortInput_EnhancedNote(what.c_str()); }
 
 }
@@ -169,6 +177,7 @@ void PortSpeedups_HandleEvent(const void* sdlEvent) {
       if (!e->key.repeat && IsFastForwardKey(code)) {
         sKeyPresses++;
       }
+      if (!e->key.repeat && IsActionKey(code, kBreakAction)) sBreakKeyPresses++;
     }
   } else if (e->type == SDL_EVENT_KEY_UP) {
     sKeysDown.erase(std::remove(sKeysDown.begin(), sKeysDown.end(), static_cast<uint16_t>(e->key.scancode)),
@@ -176,6 +185,16 @@ void PortSpeedups_HandleEvent(const void* sdlEvent) {
   } else if (e->type == SDL_EVENT_WINDOW_FOCUS_LOST) {
     sKeysDown.clear();
   }
+}
+
+uint32_t PortSpeedups_BreakPresses(void) {
+  static bool padWas = false;
+  uint32_t n = sBreakKeyPresses;
+  sBreakKeyPresses = 0;
+  const bool held = PadHeldFor(kBreakAction);
+  if (held && !padWas) n++;
+  padWas = held;
+  return n;
 }
 
 void PortSpeedups_Frame(bool gameWants) {
@@ -237,8 +256,8 @@ void PortSpeedups_Frame(bool gameWants) {
     if (mayGiveUp && !sGaveUp && (atLowest || sStalls >= 4)) {
       sGaveUp = true;
       Note("fast-forward off until the game is started again: the PC can't keep up with it");
-      PortVideo_Notice(sFastByKey ? "Fast-forward switched itself off: this PC can't keep up with it."
-                                  : "Fast battle animations switched themselves off: this PC can't keep up with them.",
+      PortVideo_Notice(sFastByKey ? Tr("Fast-forward switched itself off: this PC can't keep up with it.")
+                                  : Tr("Fast battle animations switched themselves off: this PC can't keep up with them."),
                        6.0);
     }
     sLastStallFlip = flips;

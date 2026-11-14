@@ -1,8 +1,11 @@
 #include "mods.h"
 
+#include "i18n.h"
 #include <gs_formats.h>
 
 #include <algorithm>
+#include <cstdarg>
+#include <cstdio>
 #include <cstdlib>
 #include <fstream>
 #include <iterator>
@@ -15,6 +18,17 @@ namespace engine::mods {
 namespace fs = std::filesystem;
 
 namespace {
+
+using engine::i18n::Tr;
+
+std::string Fmt(const char* format, ...) {
+  char buf[4096];
+  va_list args;
+  va_start(args, format);
+  std::vsnprintf(buf, sizeof(buf), format, args);
+  va_end(args);
+  return buf;
+}
 
 std::string Utf8(const fs::path& p) {
   const std::u8string u8 = p.u8string();
@@ -77,7 +91,7 @@ bool ResolveEntry(const FsysArchive& fsys, const std::string& discPath, const st
     const unsigned long n = std::strtoul(name.c_str() + 1, &end, 10);
     if (end != name.c_str() + 1 && (*end == '\0' || *end == '.')) {
       if (n >= fsys.count) {
-        error = discPath + " has entries #0 to #" + std::to_string(fsys.count - 1) + ", no " + name;
+        error = Fmt(Tr("%s has entries #0 to #%u, no %s"), discPath.c_str(), static_cast<unsigned>(fsys.count - 1), name.c_str());
         return false;
       }
       index = static_cast<uint32_t>(n);
@@ -105,9 +119,10 @@ bool ResolveEntry(const FsysArchive& fsys, const std::string& discPath, const st
     index = shortMatches[0];
     return true;
   }
-  error = shortMatches.empty() ? discPath + " has no entry called " + name
-                               : "several entries of " + discPath + " are called " + name +
-                                     "; name the one meant by its full name or number (" + fullNames + ")";
+  error = shortMatches.empty()
+              ? Fmt(Tr("%s has no entry called %s"), discPath.c_str(), name.c_str())
+              : Fmt(Tr("several entries of %s are called %s; name the one meant by its full name or number (%s)"),
+                    discPath.c_str(), name.c_str(), fullNames.c_str());
   return false;
 }
 
@@ -142,13 +157,13 @@ public:
     for (const FoundMod* mod : on) {
       mResult.active.push_back(mod->manifest);
       mResult.activeApplies.push_back(VerdictOf(*mod));
-      CollectFiles(*mod);
+      if (!mod->texturePack) CollectFiles(*mod);
     }
     ApplyData(on);
     Build();
     if (!mResult.active.empty()) {
-      Say(Message::Level::Info, "Mods on: " + mResult.ActiveText() + " (" + std::to_string(mResult.files.size()) +
-                                    " disc file(s) replaced or added)");
+      Say(Message::Level::Info, Fmt(Tr("Mods on: %s (%d disc file(s) replaced or added)"), mResult.ActiveText().c_str(),
+                                    static_cast<int>(mResult.files.size())));
     }
   }
 
@@ -183,8 +198,15 @@ private:
     const std::vector<std::string> fresh = AddNewMods(list, mFound);
     for (const std::string& id : fresh) {
       const FoundMod* m = Find(id);
-      Say(Message::Level::Info, "New mod found: \"" + m->manifest.name + "\" (" + m->manifest.id + "). It is off; to use "
-                                    "it, set \"" + m->manifest.id + " = on\" in " + Utf8(mOpt.listFile.filename()) + ".");
+      if (m->texturePack) {
+        Say(Message::Level::Info, Fmt(Tr("New texture pack found: \"%s\" (%s). It is on (it only changes pictures); to stop using it, set \"%s = off\" in %s."),
+                                      m->manifest.name.c_str(), m->manifest.id.c_str(), m->manifest.id.c_str(),
+                                      Utf8(mOpt.listFile.filename()).c_str()));
+        continue;
+      }
+      Say(Message::Level::Info, Fmt(Tr("New mod found: \"%s\" (%s). It is off; to use it, set \"%s = on\" in %s."),
+                                    m->manifest.name.c_str(), m->manifest.id.c_str(), m->manifest.id.c_str(),
+                                    Utf8(mOpt.listFile.filename()).c_str()));
     }
     if (!fresh.empty() || (!exists && !mFound.empty())) {
       if (mOpt.listReadOnly) {
@@ -192,7 +214,7 @@ private:
       } else if (WriteModListFile(mOpt.listFile, list)) {
         mResult.listWritten = true;
       } else {
-        Say(Message::Level::Warning, "Could not write the mod list " + Utf8(mOpt.listFile) + ".");
+        Say(Message::Level::Warning, Fmt(Tr("Could not write the mod list %s."), Utf8(mOpt.listFile).c_str()));
       }
     }
     return list;
@@ -217,8 +239,8 @@ private:
     if (mOpt.usePlaythroughMods) {
       for (const std::string& id : mOpt.playthroughMods) {
         if (Find(id) == nullptr) {
-          Say(Message::Level::Info, "This playthrough was set up with the mod \"" + id +
-                                        "\", which is not in the mods folder any more.");
+          Say(Message::Level::Info,
+              Fmt(Tr("This playthrough was set up with the mod \"%s\", which is not in the mods folder any more."), id.c_str()));
         }
       }
     }
@@ -233,8 +255,8 @@ private:
       }
       const FoundMod* mod = found;
       if (mod == nullptr) {
-        Say(Message::Level::Warning, Utf8(mOpt.listFile.filename()) + " turns on \"" + id +
-                                         "\", but there is no such mod in the mods folder.");
+        Say(Message::Level::Warning, Fmt(Tr("%s turns on \"%s\", but there is no such mod in the mods folder."),
+                                         Utf8(mOpt.listFile.filename()).c_str(), id.c_str()));
         continue;
       }
       const auto& games = mod->manifest.games;
@@ -243,8 +265,9 @@ private:
         for (const std::string& g : games) {
           gameList += (gameList.empty() ? "" : ", ") + g;
         }
-        Say(Message::Level::Problem, "The mod \"" + mod->manifest.name + "\" is made for another game or game version (" +
-                                         gameList + "); this disc is " + mOpt.disc.gameId + ". It is not used.");
+        Say(Message::Level::Problem,
+            Fmt(Tr("The mod \"%s\" is made for another game or game version (%s); this disc is %s. It is not used."),
+                mod->manifest.name.c_str(), gameList.c_str(), mOpt.disc.gameId.c_str()));
         continue;
       }
       on.push_back(mod);
@@ -259,20 +282,27 @@ private:
           const bool there = it != on.end();
           if (there && k < m.requiredVersions.size() && !m.requiredVersions[k].SatisfiedBy((*it)->manifest.version)) {
             const VersionNeed& v = m.requiredVersions[k];
-            Say(Message::Level::Problem, "The mod \"" + m.name + "\" needs the mod \"" + (*it)->manifest.name + "\" in version " +
-                                             v.op + " " + v.version + ", but the one in the mods folder is " +
-                                             ((*it)->manifest.version.empty() ? std::string("without a version")
-                                                                              : "version " + (*it)->manifest.version) +
-                                             ". \"" + m.name + "\" is not used.");
+            Say(Message::Level::Problem,
+                (*it)->manifest.version.empty()
+                    ? Fmt(Tr("The mod \"%s\" needs the mod \"%s\" in version %s %s, but the one in the mods folder is without a "
+                             "version. \"%s\" is not used."),
+                          m.name.c_str(), (*it)->manifest.name.c_str(), v.op.c_str(), v.version.c_str(), m.name.c_str())
+                    : Fmt(Tr("The mod \"%s\" needs the mod \"%s\" in version %s %s, but the one in the mods folder is version "
+                             "%s. \"%s\" is not used."),
+                          m.name.c_str(), (*it)->manifest.name.c_str(), v.op.c_str(), v.version.c_str(),
+                          (*it)->manifest.version.c_str(), m.name.c_str()));
             on.erase(on.begin() + static_cast<std::ptrdiff_t>(i));
             changed = true;
             break;
           }
           if (!there) {
             const FoundMod* other = Find(need);
-            Say(Message::Level::Problem, "The mod \"" + m.name + "\" needs the mod \"" + need + "\", which is " +
-                                             (other != nullptr ? "not on (or can't be used)" : "not in the mods folder") +
-                                             ". \"" + m.name + "\" is not used.");
+            Say(Message::Level::Problem,
+                other != nullptr
+                    ? Fmt(Tr("The mod \"%s\" needs the mod \"%s\", which is not on (or can't be used). \"%s\" is not used."),
+                          m.name.c_str(), need.c_str(), m.name.c_str())
+                    : Fmt(Tr("The mod \"%s\" needs the mod \"%s\", which is not in the mods folder. \"%s\" is not used."),
+                          m.name.c_str(), need.c_str(), m.name.c_str()));
             on.erase(on.begin() + static_cast<std::ptrdiff_t>(i));
             changed = true;
             break;
@@ -284,10 +314,11 @@ private:
             return std::any_of(ids.begin(), ids.end(), [&](const std::string& x) { return EqualNoCase(x, id); });
           };
           if (names(m.conflicts, earlier.id) || names(earlier.conflicts, m.id)) {
-            Say(Message::Level::Problem, "The mods \"" + earlier.name + "\" and \"" + m.name +
-                                             "\" can't be used together (" +
-                                             (names(m.conflicts, earlier.id) ? m.name : earlier.name) +
-                                             " says so). \"" + m.name + "\", further down the list, is not used.");
+            Say(Message::Level::Problem,
+                Fmt(Tr("The mods \"%s\" and \"%s\" can't be used together (%s says so). \"%s\", further down the list, is not "
+                       "used."),
+                    earlier.name.c_str(), m.name.c_str(), (names(m.conflicts, earlier.id) ? m.name : earlier.name).c_str(),
+                    m.name.c_str()));
             on.erase(on.begin() + static_cast<std::ptrdiff_t>(i));
             changed = true;
           }
@@ -298,10 +329,11 @@ private:
       for (const std::string& want : on[i]->manifest.after) {
         for (size_t j = i + 1; j < on.size(); j++) {
           if (EqualNoCase(on[j]->manifest.id, want)) {
-            Say(Message::Level::Warning, "The mod \"" + on[i]->manifest.name + "\" should come after \"" + on[j]->manifest.name +
-                                             "\" (it says so): move the line \"" + on[i]->manifest.id + " = on\" below \"" +
-                                             on[j]->manifest.id + " = on\" in " + Utf8(mOpt.listFile.filename()) +
-                                             ". Until then the list's order is used.");
+            Say(Message::Level::Warning,
+                Fmt(Tr("The mod \"%s\" should come after \"%s\" (it says so): move the line \"%s = on\" below \"%s = on\" in "
+                       "%s. Until then the list's order is used."),
+                    on[i]->manifest.name.c_str(), on[j]->manifest.name.c_str(), on[i]->manifest.id.c_str(),
+                    on[j]->manifest.id.c_str(), Utf8(mOpt.listFile.filename()).c_str()));
           }
         }
       }
@@ -356,8 +388,9 @@ private:
       const std::u8string generic = fs::relative(it->path(), folder, ec).generic_u8string();
       const std::string rel(reinterpret_cast<const char*>(generic.data()), generic.size());
       if (!IsAscii(rel)) {
-        Say(Message::Level::Warning, "The mod \"" + mod.manifest.name + "\" has \"" + rel +
-                                         "\": disc file names only have English letters, digits and signs; ignored.");
+        Say(Message::Level::Warning, Fmt(Tr("The mod \"%s\" has \"%s\": disc file names only have English letters, digits and "
+                                           "signs; ignored."),
+                                         mod.manifest.name.c_str(), rel.c_str()));
         continue;
       }
       out.emplace_back(rel, it->path());
@@ -380,8 +413,9 @@ private:
     const fs::path folder = mod.folder / "scripts";
     if (!mod.manifest.scripts) {
       if (fs::is_directory(folder, ec)) {
-        Say(Message::Level::Warning, "The mod \"" + mod.manifest.name +
-                                         "\" has a \"scripts\" folder but its mod.json does not say \"scripts\": true; the scripts are not used.");
+        Say(Message::Level::Warning, Fmt(Tr("The mod \"%s\" has a \"scripts\" folder but its mod.json does not say "
+                                           "\"scripts\": true; the scripts are not used."),
+                                         mod.manifest.name.c_str()));
       }
       return;
     }
@@ -391,7 +425,8 @@ private:
         if (!it->is_regular_file(ec)) continue;
         const std::string name = Utf8(it->path().filename());
         if (Lower(Utf8(it->path().extension())) != ".lua") {
-          Say(Message::Level::Warning, "The mod \"" + mod.manifest.name + "\" has \"scripts/" + name + "\": only .lua files are read; ignored.");
+          Say(Message::Level::Warning, Fmt(Tr("The mod \"%s\" has \"scripts/%s\": only .lua files are read; ignored."),
+                                           mod.manifest.name.c_str(), name.c_str()));
           continue;
         }
         found.emplace_back(name, it->path());
@@ -399,12 +434,13 @@ private:
     }
     std::sort(found.begin(), found.end());
     if (found.empty()) {
-      Say(Message::Level::Warning, "The mod \"" + mod.manifest.name + "\" says \"scripts\": true but has no scripts/*.lua.");
+      Say(Message::Level::Warning,
+          Fmt(Tr("The mod \"%s\" says \"scripts\": true but has no scripts/*.lua."), mod.manifest.name.c_str()));
       return;
     }
     if (found.size() > kMaxScriptFiles) {
-      Say(Message::Level::Problem, "The mod \"" + mod.manifest.name + "\" has more than " + std::to_string(kMaxScriptFiles) +
-                                       " script files; its scripts are not used.");
+      Say(Message::Level::Problem, Fmt(Tr("The mod \"%s\" has more than %d script files; its scripts are not used."),
+                                       mod.manifest.name.c_str(), static_cast<int>(kMaxScriptFiles)));
       return;
     }
     std::vector<ScriptFile> files;
@@ -413,8 +449,9 @@ private:
       const auto size = fs::file_size(path, sizeEc);
       std::string text;
       if (sizeEc || size > kMaxScriptFileBytes || !ReadAll(path, text)) {
-        Say(Message::Level::Problem, "The mod \"" + mod.manifest.name + "\": scripts/" + name + " could not be read or is bigger than " +
-                                         std::to_string(kMaxScriptFileBytes / 1024) + " KB; the mod's scripts are not used.");
+        Say(Message::Level::Problem, Fmt(Tr("The mod \"%s\": scripts/%s could not be read or is bigger than %d KB; the mod's "
+                                           "scripts are not used."),
+                                         mod.manifest.name.c_str(), name.c_str(), static_cast<int>(kMaxScriptFileBytes / 1024)));
         return;
       }
       files.push_back({mod.manifest.id, "scripts/" + name, std::move(text)});
@@ -430,30 +467,34 @@ private:
     std::error_code ec;
     if (!quiet && whole.empty() && entries.empty() && !fs::is_directory(mod.folder / "data", ec) &&
         !(mod.manifest.scripts && fs::is_directory(mod.folder / "scripts", ec))) {
-      Say(Message::Level::Warning, "The mod \"" + mod.manifest.name + "\" is on but has no files in \"files\", \"fsys\" or \"data\".");
+      Say(Message::Level::Warning, Fmt(Tr("The mod \"%s\" is on but has no files in \"files\", \"fsys\" or \"data\"."),
+                                       mod.manifest.name.c_str()));
     }
     CollectScripts(mod);
     for (const auto& [rel, path] : whole) {
       if (mDiscFiles.find(Lower(rel)) == mDiscFiles.end() && IsSystemName(rel)) {
-        Say(Message::Level::Warning, "The mod \"" + mod.manifest.name + "\" has \"files/" + rel +
-                                         "\": the game's program and disc header can't be replaced by mods; ignored.");
+        Say(Message::Level::Warning, Fmt(Tr("The mod \"%s\" has \"files/%s\": the game's program and disc header can't be "
+                                           "replaced by mods; ignored."),
+                                         mod.manifest.name.c_str(), rel.c_str()));
         continue;
       }
       bool isNew = false;
       Layer& layer = LayerFor(rel, isNew);
       if (!layer.wholeFrom.empty() && !IsLayerId(layer.wholeFrom)) {
-        Say(Message::Level::Warning, "Conflict: the mods \"" + NameOf(layer.wholeFrom) + "\" and \"" + mod.manifest.name +
-                                         "\" both replace " + layer.discPath + ". \"" + mod.manifest.name +
-                                         "\" (further down the list) is used.");
+        Say(Message::Level::Warning, Fmt(Tr("Conflict: the mods \"%s\" and \"%s\" both replace %s. \"%s\" (further down the "
+                                           "list) is used."),
+                                         NameOf(layer.wholeFrom).c_str(), mod.manifest.name.c_str(), layer.discPath.c_str(),
+                                         mod.manifest.name.c_str()));
       }
       if (std::any_of(layer.entries.begin(), layer.entries.end(),
                       [](const auto& e) { return !IsLayerId(e.second.from); })) {
-        Say(Message::Level::Warning, "Conflict: \"" + mod.manifest.name + "\" replaces all of " + layer.discPath +
-                                         ", so the changes inside it from " + EntryMods(layer) + " are not used.");
+        Say(Message::Level::Warning, Fmt(Tr("Conflict: \"%s\" replaces all of %s, so the changes inside it from %s are not used."),
+                                         mod.manifest.name.c_str(), layer.discPath.c_str(), EntryMods(layer).c_str()));
       }
       layer.entries.clear();
       if (!layer.onDisc && isNew) {
-        Say(Message::Level::Info, "The mod \"" + mod.manifest.name + "\" adds " + rel + ", which the disc doesn't have.");
+        Say(Message::Level::Info, Fmt(Tr("The mod \"%s\" adds %s, which the disc doesn't have."), mod.manifest.name.c_str(),
+                                      rel.c_str()));
       }
       layer.whole = path;
       layer.wholeFrom = id;
@@ -463,17 +504,17 @@ private:
     for (const auto& [rel, path] : entries) {
       const size_t slash = rel.rfind('/');
       if (slash == std::string::npos) {
-        Say(Message::Level::Warning, "The mod \"" + mod.manifest.name + "\" has \"fsys/" + rel +
-                                         "\": files there go in a folder named after the archive, like "
-                                         "fsys/common.fsys/<entry>; ignored.");
+        Say(Message::Level::Warning, Fmt(Tr("The mod \"%s\" has \"fsys/%s\": files there go in a folder named after the archive, "
+                                           "like fsys/common.fsys/<entry>; ignored."),
+                                         mod.manifest.name.c_str(), rel.c_str()));
         continue;
       }
       const std::string archive = rel.substr(0, slash), entryName = rel.substr(slash + 1);
       bool isNew = false;
       Layer& layer = LayerFor(archive, isNew);
       if (!layer.onDisc && layer.wholeFrom.empty()) {
-        Say(Message::Level::Problem, "The mod \"" + mod.manifest.name + "\" changes " + entryName + " inside " + archive +
-                                         ", but the disc has no " + archive + "; ignored.");
+        Say(Message::Level::Problem, Fmt(Tr("The mod \"%s\" changes %s inside %s, but the disc has no %s; ignored."),
+                                         mod.manifest.name.c_str(), entryName.c_str(), archive.c_str(), archive.c_str()));
         if (isNew) {
           mLayers.erase(Lower(archive));
         }
@@ -482,7 +523,7 @@ private:
       uint32_t index = 0;
       std::string error;
       if (!FindEntry(layer, entryName, index, error)) {
-        Say(Message::Level::Problem, "The mod \"" + mod.manifest.name + "\": " + error + "; ignored.");
+        Say(Message::Level::Problem, Fmt(Tr("The mod \"%s\": %s; ignored."), mod.manifest.name.c_str(), error.c_str()));
         if (isNew) {
           mLayers.erase(Lower(archive));
         }
@@ -490,9 +531,10 @@ private:
       }
       const auto had = layer.entries.find(index);
       if (had != layer.entries.end() && !IsLayerId(had->second.from)) {
-        Say(Message::Level::Warning, "Conflict: the mods \"" + NameOf(had->second.from) + "\" and \"" + mod.manifest.name +
-                                         "\" both replace " + entryName + " inside " + layer.discPath + ". \"" +
-                                         mod.manifest.name + "\" (further down the list) is used.");
+        Say(Message::Level::Warning, Fmt(Tr("Conflict: the mods \"%s\" and \"%s\" both replace %s inside %s. \"%s\" (further "
+                                           "down the list) is used."),
+                                         NameOf(had->second.from).c_str(), mod.manifest.name.c_str(), entryName.c_str(),
+                                         layer.discPath.c_str(), mod.manifest.name.c_str()));
       }
       layer.entries[index] = {path, id, entryName};
       used++;
@@ -545,16 +587,17 @@ private:
   void ApplyData(const std::vector<const FoundMod*>& on) {
     std::vector<DataModFile> files;
     for (const FoundMod* mod : on) {
+      if (mod->texturePack) continue;
       for (const auto& [rel, path] : FilesIn(*mod, mod->folder / "data")) {
         const std::string label = "data/" + rel;
         if (Lower(Utf8(fs::path(rel).extension())) != ".json") {
-          Say(Message::Level::Warning, "The mod \"" + mod->manifest.name + "\" has \"" + label +
-                                           "\": only .json files in \"data\" are read; ignored.");
+          Say(Message::Level::Warning, Fmt(Tr("The mod \"%s\" has \"%s\": only .json files in \"data\" are read; ignored."),
+                                           mod->manifest.name.c_str(), label.c_str()));
           continue;
         }
         DataModFile f{mod->manifest.id, mod->manifest.name, label, {}};
         if (!ReadAll(path, f.text)) {
-          Say(Message::Level::Problem, "Could not read " + Utf8(path) + "; its changes are not used.");
+          Say(Message::Level::Problem, Fmt(Tr("Could not read %s; its changes are not used."), Utf8(path).c_str()));
           continue;
         }
         files.push_back(std::move(f));
@@ -564,7 +607,7 @@ private:
       return;
     }
     if (!mOpt.dataCatalog) {
-      Say(Message::Level::Problem, "Data mods (\"data\" folders) are not supported for this game yet; their changes are not used.");
+      Say(Message::Level::Problem, Tr("Data mods (\"data\" folders) are not supported for this game yet; their changes are not used."));
       return;
     }
     auto catalog = std::make_shared<DataCatalog>();
@@ -573,14 +616,16 @@ private:
       return ReadEntry(a, e, out);
     };
     if (!mOpt.dataCatalog(reader, *catalog, error)) {
-      Say(Message::Level::Problem, "The game's tables could not be found on this disc (" + error +
-                                       "), so the data mods' changes are not used.");
+      Say(Message::Level::Problem, Fmt(Tr("The game's tables could not be found on this disc (%s), so the data mods' changes are not "
+                                         "used."),
+                                       error.c_str()));
       return;
     }
     if (mOpt.generateData) {
       std::vector<DataModFile> made;
       if (!mOpt.generateData(*catalog, reader, made, error)) {
-        Say(Message::Level::Problem, "The generated data (randomizer) could not be made: " + error + ". The game starts without it.");
+        Say(Message::Level::Problem, Fmt(Tr("The generated data (randomizer) could not be made: %s. The game starts without it."),
+                                         error.c_str()));
         made.clear();
       }
       for (DataModFile& f : made) files.push_back(std::move(f));
@@ -615,7 +660,7 @@ private:
       uint32_t index = 0;
       std::string findError;
       if (!FindEntry(layer, place.second, index, findError)) {
-        Say(Message::Level::Problem, "Data mods: " + findError + "; those changes are not used.");
+        Say(Message::Level::Problem, Fmt(Tr("Data mods: %s; those changes are not used."), findError.c_str()));
         continue;
       }
       Layer::Entry& e = layer.entries[index];
@@ -633,13 +678,20 @@ private:
     for (const DataChange& c : applied.changes) {
       same += c.before == c.after;
     }
-    Say(Message::Level::Info, "Data mods: " + std::to_string(applied.changes.size()) + " number(s) set in " +
-                                  std::to_string(tables.size()) + " table(s)" +
-                                  (same != 0 ? " (" + std::to_string(same) + " of them to the value the disc has)" : std::string()) +
-                                  ", " + std::to_string(archiveEntries) + " archive entr" +
-                                  (archiveEntries == 1 ? "y" : "ies") + " changed" +
-                                  (mResult.program.empty() ? std::string() : std::string(", tables in the program changed")) +
-                                  (applied.texts.empty() ? std::string() : ", " + std::to_string(applied.texts.size()) + " message text(s) rewritten"));
+    std::string summary = Fmt(Tr("Data mods: %d number(s) set in %d table(s)"), static_cast<int>(applied.changes.size()),
+                              static_cast<int>(tables.size()));
+    if (same != 0) {
+      summary += Fmt(Tr(" (%d of them to the value the disc has)"), static_cast<int>(same));
+    }
+    summary += ", " + Fmt(archiveEntries == 1 ? Tr("%d archive entry changed") : Tr("%d archive entries changed"),
+                          static_cast<int>(archiveEntries));
+    if (!mResult.program.empty()) {
+      summary += ", " + std::string(Tr("tables in the program changed"));
+    }
+    if (!applied.texts.empty()) {
+      summary += ", " + Fmt(Tr("%d message text(s) rewritten"), static_cast<int>(applied.texts.size()));
+    }
+    Say(Message::Level::Info, summary);
     mResult.dataChanges = std::move(applied.changes);
     mResult.addedRows = std::move(applied.added);
     mResult.addedTexts = std::move(applied.addedTexts);
@@ -649,7 +701,7 @@ private:
       for (const AddedRow& r : mResult.addedRows) {
         list += (list.empty() ? "" : ", ") + r.key + " (" + r.table + " #" + std::to_string(r.id) + ")";
       }
-      Say(Message::Level::Info, "Data mods add " + std::to_string(mResult.addedRows.size()) + " row(s): " + list);
+      Say(Message::Level::Info, Fmt(Tr("Data mods add %d row(s): %s"), static_cast<int>(mResult.addedRows.size()), list.c_str()));
     }
   }
 
@@ -688,8 +740,9 @@ private:
     const std::vector<uint8_t>* base = Base(layer);
     FsysArchive fsys;
     if (base == nullptr || !Fsys_Open(base->data(), base->size(), &fsys)) {
-      error = layer.discPath + (base == nullptr ? " can't be read" : " is not an FSYS archive") + ", so " + name +
-              " can't be replaced inside it";
+      error = Fmt(base == nullptr ? Tr("%s can't be read, so %s can't be replaced inside it")
+                                  : Tr("%s is not an FSYS archive, so %s can't be replaced inside it"),
+                  layer.discPath.c_str(), name.c_str());
       return false;
     }
     return ResolveEntry(fsys, layer.discPath, name, index, error);
@@ -717,8 +770,8 @@ private:
     const std::vector<uint8_t>* base = Base(layer);
     FsysArchive fsys;
     if (base == nullptr || !Fsys_Open(base->data(), base->size(), &fsys)) {
-      Say(Message::Level::Problem, layer.discPath + " can't be read, so the changes inside it from " + EntryMods(layer) +
-                                       " are not used.");
+      Say(Message::Level::Problem, Fmt(Tr("%s can't be read, so the changes inside it from %s are not used."),
+                                       layer.discPath.c_str(), EntryMods(layer).c_str()));
       return false;
     }
     std::vector<std::vector<uint8_t>> contents;
@@ -730,15 +783,16 @@ private:
       if (e.generated) {
         contents.back() = e.data;
       } else if (!ReadBytes(e.file, contents.back()) || contents.back().size() > 0xFFFFFFFFu) {
-        Say(Message::Level::Problem, "Could not read " + Utf8(e.file) + "; the changes inside " + layer.discPath +
-                                         " are not used.");
+        Say(Message::Level::Problem, Fmt(Tr("Could not read %s; the changes inside %s are not used."), Utf8(e.file).c_str(),
+                                         layer.discPath.c_str()));
         return false;
       }
       FsysEntry old;
       if (!e.generated && Fsys_Entry(&fsys, index, &old) && contents.back().size() > old.size) {
-        Say(Message::Level::Info, NameOf(e.from) + ": " + e.name + " in " + layer.discPath + " is bigger than the original (" +
-                                      std::to_string(contents.back().size()) + " bytes, was " + std::to_string(old.size) +
-                                      "). If the game runs out of memory there, this may be why.");
+        Say(Message::Level::Info, Fmt(Tr("%s: %s in %s is bigger than the original (%u bytes, was %u). If the game runs out of "
+                                         "memory there, this may be why."),
+                                      NameOf(e.from).c_str(), e.name.c_str(), layer.discPath.c_str(),
+                                      static_cast<unsigned>(contents.back().size()), static_cast<unsigned>(old.size)));
       }
       list.push_back({index, contents.back().data(), static_cast<uint32_t>(contents.back().size())});
       for (size_t at = 0; at <= e.from.size();) {
@@ -750,8 +804,8 @@ private:
     size_t size = 0;
     uint8_t* data = Fsys_Rebuild(base->data(), base->size(), list.data(), list.size(), &size);
     if (data == nullptr) {
-      Say(Message::Level::Problem, layer.discPath + " could not be rebuilt with the changes from " + EntryMods(layer) +
-                                       "; they are not used.");
+      Say(Message::Level::Problem, Fmt(Tr("%s could not be rebuilt with the changes from %s; they are not used."),
+                                       layer.discPath.c_str(), EntryMods(layer).c_str()));
       return false;
     }
     r.data.assign(data, data + size);
@@ -776,6 +830,12 @@ private:
 }
 
 namespace {
+void AddTexturePacks(std::vector<ModFolder>& found) {
+  for (ModFolder& pack : FindTexturePacks()) {
+    const bool taken = std::any_of(found.begin(), found.end(), [&](const ModFolder& m) { return EqualNoCase(m.manifest.id, pack.manifest.id); });
+    if (!taken) found.push_back(std::move(pack));
+  }
+}
 std::vector<ModFolder> FindModsImpl(const fs::path& modsFolder, std::vector<Message>& messages, std::vector<BrokenFolder>* broken) {
   std::vector<ModFolder> found;
   const auto say = [&](Message::Level level, std::string text) { messages.push_back({level, std::move(text)}); };
@@ -784,6 +844,7 @@ std::vector<ModFolder> FindModsImpl(const fs::path& modsFolder, std::vector<Mess
   };
   std::error_code ec;
   if (!fs::is_directory(modsFolder, ec)) {
+    AddTexturePacks(found);
     return found;
   }
   std::vector<fs::directory_entry> entries;
@@ -796,34 +857,36 @@ std::vector<ModFolder> FindModsImpl(const fs::path& modsFolder, std::vector<Mess
     if (!e.is_directory(ec)) {
       const std::string ext = Lower(Utf8(e.path().extension()));
       if (ext == ".zip" || ext == ".7z" || ext == ".rar") {
-        say(Message::Level::Warning, "\"" + name + "\" in the mods folder is a packed file: unpack it into its own "
-                                     "folder there (the folder with mod.json in it).");
-        broke(name, "a packed file: unpack it into its own folder in the mods folder");
+        say(Message::Level::Warning, Fmt(Tr("\"%s\" in the mods folder is a packed file: unpack it into its own folder there (the "
+                                           "folder with mod.json in it)."),
+                                         name.c_str()));
+        broke(name, Tr("a packed file: unpack it into its own folder in the mods folder"));
       }
       continue;
     }
     const fs::path manifestPath = e.path() / kManifestFile;
     std::string text, error;
     if (!fs::is_regular_file(manifestPath, ec)) {
-      say(Message::Level::Warning, "The folder \"" + name + "\" in the mods folder has no " + kManifestFile +
-                                       ", so it isn't a mod; ignored. (If the mod is one folder further in, move that "
-                                       "folder up.)");
+      say(Message::Level::Warning, Fmt(Tr("The folder \"%s\" in the mods folder has no %s, so it isn't a mod; ignored. (If the mod "
+                                         "is one folder further in, move that folder up.)"),
+                                       name.c_str(), kManifestFile));
       continue;
     }
     ModFolder mod;
     if (!ReadAll(manifestPath, text) || !ParseManifest(text, mod.manifest, error)) {
-      say(Message::Level::Problem, "The mod in \"" + name + "\" can't be used: its " + kManifestFile + " " +
-                                       (error.empty() ? std::string("can't be read") : error) + ".");
-      broke(name, std::string(kManifestFile) + " " + (error.empty() ? std::string("can't be read") : error));
+      say(Message::Level::Problem, Fmt(Tr("The mod in \"%s\" can't be used: its %s %s."), name.c_str(), kManifestFile,
+                                       (error.empty() ? std::string(Tr("can't be read")) : error).c_str()));
+      broke(name, std::string(kManifestFile) + " " + (error.empty() ? std::string(Tr("can't be read")) : error));
       continue;
     }
     bool duplicate = false;
     for (const ModFolder& other : found) {
       if (EqualNoCase(other.manifest.id, mod.manifest.id)) {
-        say(Message::Level::Problem, "The folders \"" + other.folderName + "\" and \"" + name +
-                                         "\" both hold a mod with the id \"" + mod.manifest.id + "\"; only \"" +
-                                         other.folderName + "\" is used. Remove one of them.");
-        broke(name, "the same id \"" + mod.manifest.id + "\" as the mod in \"" + other.folderName + "\", which is used instead");
+        say(Message::Level::Problem, Fmt(Tr("The folders \"%s\" and \"%s\" both hold a mod with the id \"%s\"; only \"%s\" is used. "
+                                           "Remove one of them."),
+                                         other.folderName.c_str(), name.c_str(), mod.manifest.id.c_str(), other.folderName.c_str()));
+        broke(name, Fmt(Tr("the same id \"%s\" as the mod in \"%s\", which is used instead"), mod.manifest.id.c_str(),
+                        other.folderName.c_str()));
         duplicate = true;
       }
     }
@@ -833,6 +896,7 @@ std::vector<ModFolder> FindModsImpl(const fs::path& modsFolder, std::vector<Mess
       found.push_back(std::move(mod));
     }
   }
+  AddTexturePacks(found);
   return found;
 }
 }
@@ -871,7 +935,7 @@ std::vector<std::string> AddNewMods(ModList& list, const std::vector<ModFolder>&
                    [](const ModFolder* a, const ModFolder* b) { return a->manifest.priority < b->manifest.priority; });
   std::vector<std::string> ids;
   for (const ModFolder* m : fresh) {
-    profile.mods.emplace_back(m->manifest.id, false);
+    profile.mods.emplace_back(m->manifest.id, m->texturePack);
     ids.push_back(m->manifest.id);
   }
   return ids;
@@ -924,16 +988,16 @@ AppliesVerdict CheckApplies(const ModFolder& mod, const LooksOrSound& looks, con
     return out;
   };
   if (mod.manifest.scripts) {
-    return downgrade("it runs scripts (scripts/)");
+    return downgrade(Tr("it runs scripts (scripts/)"));
   }
   for (const std::string& f : filesIn(mod.folder / "data")) {
     if (Lower(fs::path(f).extension().string()) == ".json") {
-      return downgrade("it changes the game's tables (data/" + f + ")");
+      return downgrade(Fmt(Tr("it changes the game's tables (data/%s)"), f.c_str()));
     }
   }
   for (const std::string& f : filesIn(mod.folder / "files")) {
     if (!looks || !looks(f, -1)) {
-      return downgrade("it replaces " + f + ", which isn't only pictures or sound");
+      return downgrade(Fmt(Tr("it replaces %s, which isn't only pictures or sound"), f.c_str()));
     }
   }
   std::map<std::string, std::vector<uint8_t>> archives;
@@ -964,8 +1028,10 @@ AppliesVerdict CheckApplies(const ModFolder& mod, const LooksOrSound& looks, con
       }
     }
     if (!looks || !looks(f, type)) {
-      return downgrade("it replaces " + f + " inside an archive, which isn't only pictures or sound" +
-                       (type == -2 ? std::string(" (or can't be checked without the disc)") : std::string()));
+      return downgrade(type == -2 ? Fmt(Tr("it replaces %s inside an archive, which isn't only pictures or sound (or can't be "
+                                           "checked without the disc)"),
+                                         f.c_str())
+                                  : Fmt(Tr("it replaces %s inside an archive, which isn't only pictures or sound"), f.c_str()));
     }
   }
   return v;

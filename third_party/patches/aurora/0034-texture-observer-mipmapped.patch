@@ -1,0 +1,40 @@
+diff --git a/include/aurora/texture.hpp b/include/aurora/texture.hpp
+--- a/include/aurora/texture.hpp
++++ b/include/aurora/texture.hpp
+@@ -108,6 +108,10 @@
+   void (*decoded)(void* userData, const TextureSourceKey& key, const uint8_t* rgba, uint32_t width,
+                   uint32_t height) = nullptr;
+   void* userData = nullptr;
++  /// Optional, used instead of `decoded` when set: the same, and says whether the texture's mipmap filter is not
++  /// "none" (Dolphin writes such a texture's name with "_m"). Added last so older initialisers stay valid.
++  void (*decodedInfo)(void* userData, const TextureSourceKey& key, const uint8_t* rgba, uint32_t width,
++                      uint32_t height, bool mipmapped) = nullptr;
+ };
+ void set_source_observer(SourceObserver observer);
+ 
+diff --git a/lib/gfx/texture_replacement.cpp b/lib/gfx/texture_replacement.cpp
+--- a/lib/gfx/texture_replacement.cpp
++++ b/lib/gfx/texture_replacement.cpp
+@@ -1860,7 +1860,7 @@
+     std::lock_guard lk(s_observerMutex);
+     observer = s_observer;
+   }
+-  if (observer.wants == nullptr || observer.decoded == nullptr || !observer.wants(observer.userData, sourceKey) ||
++  if (observer.wants == nullptr || (observer.decoded == nullptr && observer.decodedInfo == nullptr) || !observer.wants(observer.userData, sourceKey) ||
+       !obj.has_data()) {
+     return;
+   }
+@@ -1880,6 +1880,13 @@
+   if (pixels.data.empty() || pixels.format != wgpu::TextureFormat::RGBA8Unorm || pixels.data.size() < rgbaBytes) {
+     return;
+   }
++  if (observer.decodedInfo != nullptr) {
++    // Dolphin names a mipmapped texture "tex1_WxH_m_...": its mipmap filter is not "none".
++    const GXTexFilter filter = obj.min_filter();
++    const bool mipmapped = filter != GX_NEAR && filter != GX_LINEAR;
++    observer.decodedInfo(observer.userData, sourceKey, pixels.data.data(), obj.width(), obj.height(), mipmapped);
++    return;
++  }
+   observer.decoded(observer.userData, sourceKey, pixels.data.data(), obj.width(), obj.height());
+ }
+ 

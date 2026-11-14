@@ -2,7 +2,11 @@
 
 #include "json.h"
 
+#include "i18n.h"
+
 #include <charconv>
+#include <cstdarg>
+#include <cstdio>
 
 namespace engine::mods {
 
@@ -10,6 +14,16 @@ namespace {
 
 using json::Value;
 using json::Reader;
+using engine::i18n::Tr;
+
+std::string Fmt(const char* format, ...) {
+  char buf[1024];
+  va_list args;
+  va_start(args, format);
+  std::vsnprintf(buf, sizeof(buf), format, args);
+  va_end(args);
+  return buf;
+}
 
 bool TextField(const Value& obj, const char* key, std::string& out, std::string& error) {
   const auto it = obj.fields.find(key);
@@ -17,7 +31,7 @@ bool TextField(const Value& obj, const char* key, std::string& out, std::string&
     return true;
   }
   if (it->second.kind != Value::Kind::String) {
-    error = std::string("\"") + key + "\" must be a text in quotes";
+    error = Fmt(Tr("\"%s\" must be a text in quotes"), key);
     return false;
   }
   out = it->second.text;
@@ -44,7 +58,7 @@ bool ListField(const Value& obj, const char* key, std::vector<std::string>& out,
       return true;
     }
   }
-  error = std::string("\"") + key + "\" must be a text or a list of texts, like [\"a\", \"b\"]";
+  error = Fmt(Tr("\"%s\" must be a text or a list of texts, like [\"a\", \"b\"]"), key);
   return false;
 }
 
@@ -56,7 +70,7 @@ bool IntField(const Value& obj, const char* key, int& out, std::string& error) {
   const double n = it->second.number;
   if (it->second.kind != Value::Kind::Number || n != static_cast<double>(static_cast<int>(n)) || n < -1000000 ||
       n > 1000000) {
-    error = std::string("\"") + key + "\" must be a whole number";
+    error = Fmt(Tr("\"%s\" must be a whole number"), key);
     return false;
   }
   out = static_cast<int>(n);
@@ -140,11 +154,11 @@ bool ParseManifest(std::string_view json, Manifest& out, std::string& error) {
   Value root;
   Reader reader(json);
   if (!reader.Document(root)) {
-    error = "not valid JSON (" + reader.Error() + ")";
+    error = Fmt(Tr("not valid JSON (%s)"), reader.Error().c_str());
     return false;
   }
   if (root.kind != Value::Kind::Object) {
-    error = "must be one { ... } block";
+    error = Tr("must be one { ... } block");
     return false;
   }
   int format = kManifestFormat;
@@ -160,7 +174,7 @@ bool ParseManifest(std::string_view json, Manifest& out, std::string& error) {
     const auto it = root.fields.find("scripts");
     if (it != root.fields.end() && it->second.kind != Value::Kind::Null) {
       if (it->second.kind != Value::Kind::Bool) {
-        error = "\"scripts\" must be true or false";
+        error = Tr("\"scripts\" must be true or false");
         return false;
       }
       out.scripts = it->second.boolean;
@@ -170,7 +184,7 @@ bool ParseManifest(std::string_view json, Manifest& out, std::string& error) {
     return false;
   }
   if (out.scriptApi > kScriptApi) {
-    error = "made for a newer script interface than this port has (script_api " + std::to_string(out.scriptApi) + ")";
+    error = Fmt(Tr("made for a newer script interface than this port has (script_api %d)"), out.scriptApi);
     return false;
   }
   std::string applies;
@@ -179,17 +193,18 @@ bool ParseManifest(std::string_view json, Manifest& out, std::string& error) {
   }
   if (!applies.empty()) {
     if (!ParseApplies(applies, out.applies)) {
-      error = "\"applies\" must be \"any_time\", \"restart\" or \"new_playthrough\" (it is \"" + applies + "\")";
+      error = Fmt(Tr("\"applies\" must be \"any_time\", \"restart\" or \"new_playthrough\" (it is \"%s\")"), applies.c_str());
       return false;
     }
     out.appliesGiven = true;
   }
   if (format > kManifestFormat) {
-    error = "made for a newer version of the port (mod.json format " + std::to_string(format) + ")";
+    error = Fmt(Tr("made for a newer version of the port (mod.json format %d)"), format);
     return false;
   }
   if (!ValidModId(out.id)) {
-    error = out.id.empty() ? "has no \"id\"" : "\"id\" may only have letters, digits, '-', '_' and '.' (\"" + out.id + "\")";
+    error = out.id.empty() ? std::string(Tr("has no \"id\""))
+                           : Fmt(Tr("\"id\" may only have letters, digits, '-', '_' and '.' (\"%s\")"), out.id.c_str());
     return false;
   }
   for (std::string& other : out.required) {
@@ -211,12 +226,12 @@ bool ParseManifest(std::string_view json, Manifest& out, std::string& error) {
       need.version = other.substr(v);
       if ((need.op != ">=" && need.op != ">" && need.op != "<=" && need.op != "<" && need.op != "=" && need.op != "==") ||
           need.version.empty()) {
-        error = "\"requires\" has \"" + other + "\": write a version condition like \"other-mod >= 1.2\"";
+        error = Fmt(Tr("\"requires\" has \"%s\": write a version condition like \"other-mod >= 1.2\""), other.c_str());
         return false;
       }
     }
     if (!ValidModId(id)) {
-      error = "\"requires\" has \"" + other + "\", which isn't a mod id";
+      error = Fmt(Tr("\"requires\" has \"%s\", which isn't a mod id"), other.c_str());
       return false;
     }
     other = std::string(id);
@@ -224,18 +239,18 @@ bool ParseManifest(std::string_view json, Manifest& out, std::string& error) {
   }
   for (const std::string& other : out.after) {
     if (!ValidModId(other)) {
-      error = "\"after\" has \"" + other + "\", which isn't a mod id";
+      error = Fmt(Tr("\"after\" has \"%s\", which isn't a mod id"), other.c_str());
       return false;
     }
   }
   for (const std::string& other : out.conflicts) {
     if (!ValidModId(other)) {
-      error = "\"conflicts\" has \"" + other + "\", which isn't a mod id";
+      error = Fmt(Tr("\"conflicts\" has \"%s\", which isn't a mod id"), other.c_str());
       return false;
     }
   }
   if (out.games.empty()) {
-    error = "has no \"game\" (the game ID it is made for, e.g. \"GXXE01\")";
+    error = Tr("has no \"game\" (the game ID it is made for, e.g. \"GXXE01\")");
     return false;
   }
   if (out.name.empty()) {

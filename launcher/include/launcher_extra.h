@@ -41,7 +41,9 @@ struct Status {
   std::string detail;
 };
 Status ComputeStatus(const std::filesystem::path& modFolder, const std::string& expectedModId, bool converterFound,
-                     const std::string& converterVersion);
+                     const std::string& converterVersion, const std::string& modelsFolder = "fsys");
+
+std::vector<std::string> ListNames(const std::filesystem::path& jsonFile);
 
 struct SecondStatus {
   enum class Kind { NotMade, Ready, OutOfDate } kind = Kind::NotMade;

@@ -27,7 +27,7 @@ int main() {
   xd_settings::Register(r);
 
   const auto& sources = xd::ExtraSources();
-  check(sources.size() == 1, "one source today: Pokemon Battle Revolution");
+  check(sources.size() == 3, "three sources: Pokemon Battle Revolution, Pokemon Colosseum, the European disc (languages)");
   std::set<std::string> ids;
   for (const auto& s : sources) {
     const std::string who = "source " + s.id + ": ";
@@ -42,13 +42,15 @@ int main() {
       game |= a.find("{game_disc}") != std::string::npos;
       out |= a.find("{out}") != std::string::npos;
     }
-    check(disc && game && out, who + "the arguments name the extra disc, the player's disc and the folder to make");
+    check(disc && (game || !s.needsGameDisc) && out, who + "the arguments name the extra disc, the player's disc (when it needs it) and the folder to make");
     const size_t i = r.Find(s.discSetting);
     check(i != es::kNoSetting && r.Get(i).type == es::Type::Text && r.Get(i).preference,
           who + "its disc path is a text preference setting (" + s.discSetting + ")");
     check(s.discSetting.rfind("system.extra_disc.", 0) == 0, who + "the disc setting is under system.extra_disc.");
-    const size_t sw = r.Find(s.switchSetting);
-    check(sw != es::kNoSetting && r.Get(sw).type == es::Type::Bool, who + "its switch is a Bool setting");
+    if (!s.switchSetting.empty()) {
+      const size_t sw = r.Find(s.switchSetting);
+      check(sw != es::kNoSetting && r.Get(sw).type == es::Type::Bool, who + "its switch is a Bool setting");
+    }
     check(!s.manifestId.empty() && engine::mods::ValidModId(s.manifestId), who + "the description file's id is valid");
   }
   const auto& pbr = sources[0];
@@ -57,6 +59,23 @@ int main() {
             std::string(xd::battle_models::kLayerId) == pbr.id,
         "its folder is extra_assets\pbr (the layer id is the source id), description id battle-revolution-models");
   check(pbr.converterFolder == "pbr_models" && pbr.converterStem == "pbr_models", "converter: <game folder>\\pbr_models\\pbr_models");
+
+  const auto& colo = sources[1];
+  check(colo.id == "colosseum" && colo.gameIds.size() == 1 && colo.gameIds[0] == "GC6E01", "Colosseum: id colosseum, game ID GC6E01 (USA)");
+  check(colo.manifestId == "colosseum-characters" && colo.converterStem == "colo_models" && !colo.needsGameDisc,
+        "Colosseum: description id colosseum-characters, converter colo_models, no XD disc needed");
+  check(colo.modelsFolder == "models" && colo.contentsFile == "characters.json", "Colosseum: counts models/, lists characters.json");
+  const auto& lang = sources[2];
+  check(lang.id == "languages" && lang.gameIds.size() == 1 && lang.gameIds[0] == "GXXP01", "languages: id languages, game ID GXXP01 (European)");
+  check(lang.manifestId == "xd-languages" && lang.converterStem == "xd_languages", "languages: description id xd-languages, converter xd_languages");
+  {
+    const size_t li = r.Find("system.language");
+    check(li != es::kNoSetting && r.Get(li).type == es::Type::Enum && r.Get(li).preference && r.Get(li).implemented,
+          "the Language setting is an enum preference that works");
+    check(li != es::kNoSetting && r.Get(li).choices.size() == 5 && r.Get(li).choices[0].id == "us", "Language: us first, then four more");
+    check(li != es::kNoSetting && r.DefaultOf(li, es::Preset::Original).i == 0 && r.DefaultOf(li, es::Preset::Enhanced).i == 0,
+          "English (US) in Original and in Enhanced");
+  }
 
   const size_t i = r.Find(xd::battle_models::kSetting);
   check(i != es::kNoSetting && r.Get(i).implemented && !r.Get(i).preference, "the setting exists, works and is not a preference");

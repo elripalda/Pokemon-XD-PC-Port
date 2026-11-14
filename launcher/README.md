@@ -1,6 +1,6 @@
 # launcher/
 
-The launcher is the small window you start first: **`Pokemon XD.exe`** in the player's folder (below), which
+The launcher is the small window you start first: **`Pokemon XD Launcher.exe`** in the player's folder (below), which
 starts **`xd_launcher.exe`** (in `build\release\bin`, next to `xd.exe`; starting that directly works too).
 Choose your disc, how you want to play, your controls and mods, then press **Play**.
 
@@ -156,7 +156,7 @@ there is no upload, no email and no network code. To share one, the player expor
 A page for the discs of other games (not the game the port plays) whose pictures or models the port can use. The list
 of sources is a small table (`GameInfo::ExtraSource`, XD's rows in `games/xd/launcher/xd_extra_sources.cpp`): id, the
 disc's name, the game IDs it accepts, what it provides, how it is made, the setting that remembers the disc's path, the
-description file's id, and the converter program. One row today; Pokemon Colosseum and others get a row each.
+description file's id, and the converter program. Two rows: Battle Revolution and Colosseum.
 
 Extra assets are a **built-in feature of the port, not mods** (mods are things other people make and add through the
 Mods page). What is made goes in `<data folder>\extra_assets\<source id>\` (e.g. `extra_assets\pbr`), never in the
@@ -166,6 +166,12 @@ mod list.
 - **Pokemon Battle Revolution (USA, RPBE01)** gives "Battle Revolution battle models": the Pokemon models of that disc
   (a Wii disc) turned into XD's model format, in `extra_assets\pbr`. XD keeps its own model for any Pokemon the
   converter couldn't convert.
+- **Pokemon Colosseum (USA, GC6E01)** (2026-11-13, docs/COLOSSEUM_MODELS.md) gives "Colosseum characters": the trainer models of that disc
+  (Wes, Rui and 72 others; a GameCube disc, .ciso works) in XD's model format, in `extra_assets\colosseum` (`models\<id>.pkx`,
+  `characters.json`). Its converter is `pbr_models\colo_models` (same folder as pbr_models; `XD_COLO_MODELS_EXE` overrides it),
+  it needs only the Colosseum disc (`ExtraSource::needsGameDisc = false`), the status counts `models\` (`modelsFolder`), and the
+  page lists the names in `characters.json` (`contentsFile`). No switch: nothing in the game reads it yet (the online battle's
+  trainer card will). Script: `extradisc:colosseum=<disc>`, `extramake:colosseum`; `tools/colo_models/proof_launcher.py`.
 - Per source: **Choose disc...** (the Disc page's file picker; .iso .rvz .wbfs .ciso .gcz), a quick check that the file
   really is that game (its header, through the same disc reader as the Disc page; a wrong game says which game it is
   and which one is needed), the path remembered in settings.ini as `system.extra_disc.pbr` (hidden from the Settings
@@ -268,9 +274,8 @@ and choose which one the game loads; the game is not changed.
     The pictures are made on this PC each time the game saves (`playthroughs\Card A\<key>.png` in the save's folder);
     docs/PLAY_SETUP.md "Choosing a save at CONTINUE". The launcher's rows do not show them yet.
   - **Above the list**: **New...**: a new, empty save (asks for a name; "Save 2" is offered). It is chosen and
-    opened, and the game offers New Game. **Import...**: a `.gci` file (from Dolphin's "GCI folder", a GameCube
-    memory-card tool, or another PC). Only a file the game's own save reader accepts (a USA Pokemon XD save). It
-    becomes a new save named after its trainer, chosen and opened; the file picked is only copied.
+    opened, and the game offers New Game. **Import from Dolphin / GameCube...** opens a panel (README section "Importing a
+    save from Dolphin or a GameCube" below). Only a USA Pokemon XD save the game's own save reader accepts can come in.
   - **In the box** (they act on the open save, whether the game loads it or not):
     **Rename...**: another name. Only the name in the list changes.
     **Duplicate**: a copy called "<name> (copy)" (the save and its setup, not its backups). The copy is not chosen.
@@ -284,6 +289,53 @@ and choose which one the game loads; the game is not changed.
   - Script steps (tests; the list at the top of include/launcher.h): `slot:<n|name>` ticks a circle,
     `openslot:<n|name|none>` is the click on a row, `renameslot` / `dupslot` / `deleteslot` / `exportslot` act on
     the open save, `showbackups`, `backup:<n>` (the open save's list).
+## Colosseum import (Save page)
+
+An open save's box has **Colosseum import...** (docs/SAVE_TRANSFERS.md "5"): choose a Pokemon Colosseum (USA) save (`.gci` or a
+memory card image), every Pokemon in it is listed with what it would lose on the way (Colosseum-only items, the place it was
+met, a purified Pokemon's Shadow record) or why it stays behind (an unpurified Shadow Pokemon, an egg, anything the legality
+check refuses); tick some and "Copy the ticked Pokemon into the PC boxes". One way: the Colosseum save is only read. A backup
+of the XD save goes to `<card root>\save_backups\colosseum_import_<time>\`. Hooks `GameInfo::Saves::monsOpen / monsDo`; XD's
+code `games/xd/launcher/xd_colosseum_page.cpp`. Script steps `monsfile:<file>`, `monspick:<n,n|all>`, `monsconfirm`.
+Tests: `python tools/test_colosseum_import.py`. Never tried on a real Colosseum save.
+
+## GBA trade (Save page)
+
+An open save's box has **GBA trade...** (docs/SAVE_TRANSFERS.md "4"): choose a Game Boy Advance save (Ruby, Sapphire, Emerald,
+FireRed, LeafGreen), both parties are listed with the reason for every Pokemon that can't go (the game's own link-trade rules,
+Generation 4 Pokemon, and the legality check), pick one on each side, "Trade these two". Backups of both saves go to
+`<card root>\save_backups\gba_trade_<time>\`; the GBA save is never changed (a new `<name>.traded.sav` is made next to it); the
+XD side is written into that save. Hooks: `GameInfo::Saves::tradeOpen / tradeDo`; XD's code `games/xd/launcher/xd_gba_page.cpp`.
+Script steps `tradefile:<file>`, `tradepick:<yours>,<theirs>`, `tradeconfirm`. Test: `python tools/test_gba_trade_page.py`.
+
+## Importing a save from Dolphin or a GameCube
+
+Save page > "Import from Dolphin / GameCube..." (docs/SAVE_TRANSFERS.md has the design). Same on Windows, Linux and Mac.
+- The panel **looks by itself** in Dolphin's folders (USA only): Windows `%APPDATA%\Dolphin Emulator` and the older
+  `Documents\Dolphin Emulator`, Linux `~/.local/share/dolphin-emu`, `~/.dolphin-emu` and the Flatpak's folder, Mac
+  `~/Library/Application Support/Dolphin`; inside, the GCI folders (`GC/USA/Card A|B/*.gci`) and the memory card files
+  (`GC/*.raw`), and the paths Dolphin.ini names (`MemcardAPath`, `GCIFolderAPath`...). Only files that hold a Pokemon XD
+  (USA) save are listed (other games' files, other regions' saves and damaged ones are left out), newest first. Each row:
+  trainer, play time, where it is. A click shows what is in it (trainer, ID, play time, money, party, with the disc's
+  names) before anything is added.
+- **Choose a file...** opens the system's file window for anything else: a `.gci`, a whole memory card image (`.raw`,
+  `.gcp`, `.mcd`; the Pokemon XD file is taken out of it), or a cheat device's `.gcs` / `.sav` wrapper. A file that isn't
+  one is refused in plain words (a Game Boy Advance save says so; another region's XD save says so).
+- **Add as a new save** makes a NEW save named after the trainer, chosen and opened. It never replaces a save; the file
+  chosen is only copied (a save taken out of a card image is written as a `.gci`). The card always holds the GameCube
+  byte order (the game's own view is made at the card, `GameViewOf`), so a GameCube / Dolphin save needs no conversion;
+  a save found in the PC byte order is put into the GameCube one on the way in.
+- Code: `engine/memcard/card_sources.cpp` (game-neutral: Dolphin's folders per system, the file kinds),
+  `sl::ImportBytes` (save_slots.cpp), `GameInfo::Saves::findImportable` / `checkImport` (games/xd/launcher/xd_launcher.cpp:
+  `CheckImport`, `FindImportable`, `SummaryOf` = the facts and party the Save page shows), `DrawImport` / `ImportPick` /
+  `ImportConfirm` (launcher_app.cpp).
+- Script steps: `importfind` (open the panel and look), `wait:import`, `importpick:<n|file>` (the n-th found save from 1,
+  or a file as if chosen with Choose a file...), `importconfirm`, `importcancel`; `importslot:<file>` still adds a file at once.
+  `XD_DOLPHIN_USER_DIR=<folder>[;<folder>]` names Dolphin folders outright (tests).
+- Tests: `card_sources_test.exe` (Dolphin's folders on made-up Windows / Linux / Mac trees, file kinds);
+  `python tools/test_save_import.py --build <bin>` (the scripted launcher on a made-up Dolphin folder: finds the saves,
+  shows them, adds them, refuses a GBA file and a PAL save; Save 1 and Dolphin's folder byte for byte unchanged).
+
 - **The player's existing save is "Save 1" and nothing of it moves**: the first save's folder is the data folder
   itself, where the save has always been.
 - **Where things are**:
@@ -309,7 +361,7 @@ and choose which one the game loads; the game is not changed.
   not the chosen one are read through `xd::CardRootScope`, the open one's contents on a thread of its own,
   `App::OpenSummary`).
 - **Script steps** (tests): `slot:<n|name>`, `newslot:<name>`, `renameslot:<name>`, `dupslot`, `deleteslot`,
-  `importslot:<file.gci>`, `exportslot:<file.gci>`. `XD_SAVE_BIN_DIR=<folder>`: deleted saves are moved there
+  `importslot:<file>`, `exportslot:<file.gci>` (+ the import panel's steps, next section). `XD_SAVE_BIN_DIR=<folder>`: deleted saves are moved there
   instead of into the recycle bin (tests). A scripted launcher without `XD_SETTINGS_DIR` (a test on the player's own
   files) refuses every change to the saves.
 - **Tests**: `save_slots_test.exe` (the engine part: 72 checks, also damaged lists and names that aren't ASCII);
@@ -415,7 +467,7 @@ and choose which one the game loads; the game is not changed.
   Testing: `XD_LAUNCHER_SHADERS=0` leaves it out (so does `XD_LAUNCHER_RENDER=0`, unless `XD_LAUNCHER_SHADERS=1`);
   script step `wait:shaders`; `python tools/test_shader_prep.py --build <bin>` (below).
 - **Shortcuts**: the Disc page's "Create Start menu shortcut" / "Create desktop shortcut" make a `Pokemon XD.lnk`
-  to `Pokemon XD.exe` (the top of the player's folder) with the disc's icon. If Windows refuses (a desktop kept
+  to `Pokemon XD Launcher.exe` (the top of the player's folder) with the disc's icon. If Windows refuses (a desktop kept
   in OneDrive, folder protection), the page says so and how to make one by hand.
 - Shared code: `launcher/launcher_icon.cpp` (GameCube picture formats, Scale2x, .ico writing),
   `platform/os/window_icon.cpp` (a window's icon from a file or the program's own). XD's part: which pictures
@@ -426,7 +478,7 @@ and choose which one the game loads; the game is not changed.
 `python tools/package_release.py` (after `build.bat release`) makes `dist\Pokemon XD PC\`:
 
     Pokemon XD PC\
-      Pokemon XD.exe   the only program on top: starts game\xd_launcher.exe (games/xd/launcher/starter.cpp;
+      Pokemon XD Launcher.exe   the only program on top: starts game\xd_launcher.exe (games/xd/launcher/starter.cpp;
                        C library built in, needs no DLL next to it), or the folder game_folder.txt names
       Read me.txt      for players
       game\            xd_launcher.exe, xd.exe, SDL3, Dawn, nod, DXC, zlib, libpng, the Microsoft C++
@@ -442,7 +494,7 @@ libpng and the C++ runtime next to it, which would put a dozen files beside it. 
 
 The launcher finds the game next to itself (`xd.exe`), else in `game\` (a launcher copied to the top). The data
 folder is unchanged: `%APPDATA%\Pokemon XD`, or portable mode with Borealis's `data_location.json`
-(`{"version": 1, "mode": "portable"}`). That file works in either place: next to `Pokemon XD.exe` (data in
+(`{"version": 1, "mode": "portable"}`). That file works in either place: next to `Pokemon XD Launcher.exe` (data in
 `Pokemon XD PC\portable`) or in `game\` next to the programs (data in `game\portable`); the one in `game\` wins
 when both exist (platform/os/user_folder.cpp). Read me.txt tells players the first.
 
@@ -460,10 +512,10 @@ always asks before downloading.
   version" (that version is never asked about again at start; "Check now" still shows it).
 - **Update now**: downloaded into `<data folder>\updates`, size and SHA-256 checked against the Ed25519-signed
   manifest, unpacked into `game-<version>.partial` next to `game\`, renamed to `game-<version>` when complete, then
-  `game_folder.txt` (next to "Pokemon XD.exe") says to start it. The starter opens it the next time ("Restart now").
+  `game_folder.txt` (next to "Pokemon XD Launcher.exe") says to start it. The starter opens it the next time ("Restart now").
   Any failure: nothing changes, a plain message. The data folder is never touched.
 - **Go back**: switches `game_folder.txt` back to the previous folder (kept); the version left is then skipped.
-- Only in the player's folder (a launcher in `game\` or `game-<version>\` under "Pokemon XD.exe"); a build folder
+- Only in the player's folder (a launcher in `game\` or `game-<version>\` under "Pokemon XD Launcher.exe"); a build folder
   can check but not install. Data kept inside the game folder (portable mode in `game\`) is refused with a message.
 - Same on Linux and the Mac since 0.4.1 (docs/UPDATER.md "On each system"): Linux installs `game-<version>/` from a
   tar.gz exactly as Windows does (the start script reads `game_folder.txt`); the Mac unpacks the new `Pokemon XD.app`
@@ -472,6 +524,81 @@ always asks before downloading.
 - Code: `engine/update` (manifest, Monocypher Ed25519, WinHTTP or curl, SHA-256, zip via zlib, tar.gz, folders),
   `launcher_app.cpp` (`DrawUpdateCard`, `DrawUpdateWindows`), XD's names in `xd_launcher.cpp` (`SetUpUpdates`), the
   starter (`starter.cpp`). Tests: `update_test.exe`, `python tools/test_updater.py --build <bin>` (local feed).
+
+## Controller (Steam Deck and every pad)
+
+Every page, window and question can be used with only a gamepad. On a Steam Deck the built-in controls are a
+gamepad to SDL, so this is the Deck's Game Mode way of using the launcher; it is the same code on Windows, Linux and
+Mac (docs/ROADMAP.md "Planned: 0.5.0").
+
+**Controller mode** turns on by itself: the first button press (or stick push) of any controller, a Steam Deck
+start (`SteamDeck=1`, gamescope), or `XD_LAUNCHER_PAD=on`. It turns off when the mouse, a finger or a keyboard key is
+used (`XD_LAUNCHER_PAD=off` / `on` fixes it). Only while the launcher is the window in front: a pad playing the game
+(the launcher kept open) never moves the launcher's focus. In controller mode:
+
+- everything is 20% bigger (fonts, buttons, rows: the Deck's 7-inch screen at 1280x800), the pages keep their layout;
+- a bar at the bottom shows the buttons with the **device's own names and pictures** (A B X Y on an Xbox pad, the four
+  symbols on a PlayStation pad, Switch letters, LB/RB, L1/R1, L/R, ZL/ZR: `engine/controls` names, the same ones the
+  Controls page uses). The pad used last decides; a Switch pad's "A" is its right-hand button, the one labelled A;
+- the file windows are the built-in browser (below), and text fields get the on-screen keyboard (below).
+
+| Button | What it does |
+|---|---|
+| D-pad / left stick | move the focus (a violet outline; the page scrolls to follow it) |
+| A (the button labelled A) | choose: press a button, tick a box, open a list, enter a slider / text field |
+| B | back: closes a window or list; on a page, back to the list of pages. Windows with a "Cancel / No / Keep it" button treat B as that button |
+| LB / RB | the previous / next page (the page list wraps) |
+| LT / RT | the previous / next tab: the Settings page's categories, the Controls page's controller 1-4 |
+| Start | the menu: Play, Quit the launcher (Play is also at the end of every page by D-pad). The page list also ends with "Quit..." |
+
+Focus rules a page must follow: every `BeginChild` holding controls carries `ImGuiChildFlags_NavFlattened`, and every
+`InvisibleButton` that should take the focus gets `ImGuiButtonFlags_EnableNav` (ImGui leaves it out otherwise). In controller
+mode the launcher logs `pad: child window "..." ... not NavFlattened` once for a child it can't reach (the test checks that
+no such line appears). While the focus is on the page, the page list is skipped by the D-pad (its entries would be
+nearer than the page's own); B or LB / RB put the focus back on the open page's entry, Right or A on it goes in. Tooltips follow the focus too (`Hot()` instead of
+`ImGui::IsItemHovered`); Play's "why not" is a line under the bar instead of a tooltip. Windows that start with the
+destructive button first (Delete it, Restore it) put the focus on the safe one (`SetItemDefaultFocus`).
+
+**Text** (`launcher_pad.h`, `Keyboard`): while a text field is being edited in controller mode, an on-screen keyboard
+opens over the bottom of the window. It does not belong to a field: it types into the field that is being edited by
+feeding Dear ImGui key and character events, so every `InputText`, now and later (a room code), works and keeps its own
+rules (length, characters, Enter). A types the key, X Delete, Y Space, LB / RB cursor, LT Shift, RT 123 / abc, Start
+Done (Enter), B Cancel (Esc: the field gives its old text back). A pad starts editing a field with A when the field is
+made with `pad::InputText` (the launcher's own fields and the Text settings, `Options::textInput`); a plain
+`ImGui::InputText` is not started by A (ImGui wants Enter or Y for that, which a pad doesn't send). The keyboard shows what is typed so far, since
+the field may be behind it. The Deck's own keyboard: not used; SDL starts text input whenever a field is edited, so a
+system that has a keyboard of its own for that may show it too (not seen on a Deck yet, see the questions).
+
+**Files** (`launcher_pad.h`, `FileBrowser`): the system's file window is mouse-only on a Deck in Game Mode, so while
+controller mode is on, `ShowOpenDialog` / `ShowSaveDialog` (the five places that called SDL's dialogs before) open the
+browser instead. Mouse users keep the system's window. Left: recent folders (the last 8 used, kept in
+`launcher_recent_folders.txt` in the launcher's data folder) and places (home, Desktop, Documents, Downloads, drives
+on Windows, memory cards under `/run/media` and `/media` on Linux, `/Volumes` on the Mac). Right: the folder,
+folders first, files of the chosen kind only (the SDL filters of the call; Y goes round them). A opens a folder /
+picks a file, B goes up a folder (closes at the top), X cancels. Saving: a "File name" field (the keyboard) and "Save
+here". It calls the same callback SDL's window would, so no page knows the difference. While the "Save a play session"
+window is open the browser is drawn inside it (a window opened from outside would close it).
+
+**Controls page**: "Change" waits for a controller button as before and gives up after 8 seconds in controller mode (a
+pad has no Esc). Keyboard keys can't be set with a pad; that needs a keyboard.
+
+**Script steps** (launcher.h): `padmode:on|off`, `pad:<button>[+<button>][:<times>]`, `padtype:xbox|ps|switch`,
+`type:<text>`, `padwhere`. A pad step also turns controller mode on, as a real press does. `tools/test_launcher_pad.py`
+drives every page that way and writes 1280x800 screenshots.
+
+**State (2026-11-13).** Tested on Windows with `tools/test_launcher_pad.py` (scripted launcher, virtual button
+presses, 1280x800 screenshots; scenarios tour, pages, preset, settings, controls, keyboard, modalb, browser, play, reach,
+quit, names). NOT yet seen: a real controller (the SDL reading in `Input::Update` and the Switch / PlayStation button
+swap run only on a real pad), a real Steam Deck in Game Mode (gamescope, the Deck's keyboard), Linux and Mac builds
+(same code; Linux places in the browser untested), the updater question by pad (the same window kind as the others: the
+test answers it with the D-pad each run), Reports / Extra assets pages beyond reaching them.
+
+For developers: `launcher_pad.cpp` is game-neutral and knows no page. The only per-app pieces are in
+`launcher_app.cpp`: the mode switch (`SetController`, `ApplyScale`: fonts and style are made again at 1.2x), the
+loop's input step (`padIn_.Update`, `osk_.Update`, `padIn_.Feed` before `ImGui::NewFrame`), `PadShortcuts`,
+`DrawPadUi`. Input goes to Dear ImGui's gamepad navigation (`NavEnableGamepad`, with its own button mapping instead of
+the backend's, so that Confirm is the button labelled A and the shoulders stay free). A page added later needs nothing
+if it uses ordinary widgets; check that its `BeginChild` calls are `NavFlattened`.
 
 ## Original means nothing extra
 
@@ -501,7 +628,7 @@ What is different, and what the player sees:
 | Shaders prepared before the first Play | done as on Windows since 0.4.1 (WSL, software Vulkan: 5363 pipelines in 113 s; never on a real GPU); `XD_LAUNCHER_SHADERS=0` leaves it out |
 | "Open folder" opens Explorer | `xdg-open`; a desktop without it gets a small window with the folder's path and "Copy the path" |
 | Deleted saves go to the recycle bin | to the desktop's trash (freedesktop.org: `~/.local/share/Trash`, with its info file so the file manager can put it back); on another drive than the saves: refused with a message, never deleted |
-| Start menu / desktop shortcut (.lnk) | "applications menu" (`~/.local/share/applications`) / desktop shortcut: a `.desktop` file starting `Pokemon XD.sh`; some desktops ask to "Allow launching" first |
+| Start menu / desktop shortcut (.lnk) | "applications menu" (`~/.local/share/applications`) / desktop shortcut: a `.desktop` file starting `Pokemon XD Launcher.sh`; some desktops ask to "Allow launching" first |
 | "Hide my Windows user name" in exports | "Hide my user name": `$USER` and `$HOME` are taken out the same way |
 | Screenshots in exports as JPEG | kept as PNG (no JPEG writer on Linux yet) |
 

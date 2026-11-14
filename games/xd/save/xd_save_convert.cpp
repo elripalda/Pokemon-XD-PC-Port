@@ -261,6 +261,12 @@ void Write32(uint8_t* p, uint32_t v, ByteOrder order) {
 
 }
 
+void SwapPokemonRecord(uint8_t* record) {
+  UnitList u(kPokemonSize);
+  AddPokemon(u, 0);
+  u.Apply(record);
+}
+
 const char* SlotResultName(SlotResult r) {
   switch (r) {
   case SlotResult::Unwritten: return "not written";

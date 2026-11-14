@@ -3,6 +3,13 @@
 
 #include "update.h"
 
+#include "i18n.h"
+
+namespace engine::update {
+using engine::i18n::Tr;
+std::string Fmt(const char* format, ...);
+}
+
 namespace engine::update::detail {
 
 std::string Utf8(const std::filesystem::path& p);
@@ -15,6 +22,7 @@ bool UseInnerFolder(const std::filesystem::path& folder, const std::vector<std::
 
 constexpr bool IsLinkMode(uint32_t unixMode) { return (unixMode & 0170000u) == 0120000u; }
 bool FinishUnpackedFile(const std::filesystem::path& file, uint32_t unixMode);
+int RestoreExecutableBits(const std::filesystem::path& folder);
 bool MakeUnpackedLink(const std::filesystem::path& root, const std::string& relative, const std::string& target,
                       std::string& error);
 bool AncestorIsLink(const std::filesystem::path& root, const std::string& relative);

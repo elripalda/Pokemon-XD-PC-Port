@@ -38,6 +38,9 @@ size_t CtrlArgBytes(uint8_t ctrl) {
 
 struct GameNames::Impl {
   XDCommonTables tables{};
+  bool littleText = false;
+  std::vector<uint32_t> abilityKeys;
+  std::vector<std::string> abilities;
   std::vector<const uint8_t*> banks;
 
   void* Global(const char* name) const {
@@ -84,21 +87,56 @@ struct GameNames::Impl {
 GameNames::GameNames() = default;
 GameNames::~GameNames() = default;
 
+bool GameNames::LoadFromRunningGame(const void* tables, std::string& error) {
+  impl_.reset();
+  auto impl = std::make_unique<Impl>();
+  impl->tables = *static_cast<const XDCommonTables*>(tables);
+  if (const uint8_t* t = PortXD_GetDolTable("common_tbl")) {
+    impl->banks.push_back(t);
+  }
+  if (void** res = static_cast<void**>(impl->Global("table_res"))) {
+    if (impl->Count("table_res_number") > 1 && res[1] != nullptr) {
+      impl->banks.push_back(static_cast<const uint8_t*>(res[1]));
+    }
+  }
+  if (impl->banks.empty()) {
+    error = "no message banks found";
+    return false;
+  }
+  impl_ = std::move(impl);
+  const std::string a = Species(1);
+  if (a.empty() || a[0] < 'A' || a[0] > 'Z') {
+    impl_->littleText = true;
+  }
+  return true;
+}
+
 bool GameNames::Load(const std::string& discPath, std::string& error) {
+  return LoadImpl(discPath, false, error);
+}
+
+bool GameNames::LoadFromRunningGame(std::string& error) { return LoadImpl(std::string(), true, error); }
+
+bool GameNames::LoadImpl(const std::string& discPath, bool running, std::string& error) {
   impl_.reset();
   auto impl = std::make_unique<Impl>();
   char err[512] = {};
-  if (!PortDisc_Open(discPath.c_str(), err, sizeof(err))) {
-    error = err;
-    return false;
+  if (!running) {
+    if (!PortDisc_Open(discPath.c_str(), err, sizeof(err))) {
+      error = err;
+      return false;
+    }
+    size_t dolSize = 0;
+    const uint8_t* dol = PortDisc_Dol(&dolSize);
+    if (dol == nullptr || !PortXD_LoadDolTables(dol, dolSize, err, sizeof(err))) {
+      error = std::string("main.dol: ") + err;
+      return false;
+    }
   }
-  size_t dolSize = 0;
-  const uint8_t* dol = PortDisc_Dol(&dolSize);
-  if (dol == nullptr || !PortXD_LoadDolTables(dol, dolSize, err, sizeof(err))) {
-    error = std::string("main.dol: ") + err;
-    return false;
-  }
-  if (!PortXD_LoadCommonRel(&impl->tables, err, sizeof(err))) {
+  const XDCommonTables* live = running ? PortXD_LiveCommonTables() : nullptr;
+  if (live != nullptr) {
+    impl->tables = *live;
+  } else if (!PortXD_LoadCommonRel(&impl->tables, err, sizeof(err))) {
     error = std::string("common_rel: ") + err;
     return false;
   }
@@ -114,23 +152,45 @@ bool GameNames::Load(const std::string& discPath, std::string& error) {
     error = "no message banks found";
     return false;
   }
+  {
+    size_t dolSize = 0;
+    const uint8_t* dol = PortDisc_Dol(&dolSize);
+    for (int i = 0; dol != nullptr && dolSize >= 0xE4 && i < 18; i++) {
+      const uint32_t off = be32(dol + i * 4), addr = be32(dol + 0x48 + i * 4), len = be32(dol + 0x90 + i * 4);
+      constexpr uint32_t kAt = 0x803FFC50, kBytes = 0x3A8;
+      if (len != 0 && kAt >= addr && kAt - addr + kBytes <= len && static_cast<size_t>(off) + (kAt - addr) + kBytes <= dolSize) {
+        const uint8_t* rows = dol + off + (kAt - addr);
+        for (uint32_t r = 0; r < kBytes / 12; r++) { impl->abilities.push_back(std::to_string(be32(rows + r * 12 + 4))); impl->abilityKeys.push_back(be32(rows + r * 12 + 4)); }
+        break;
+      }
+    }
+  }
   impl_ = std::move(impl);
+  for (std::string& a : impl_->abilities) a = Message(static_cast<uint32_t>(std::stoul(a)));
   return true;
 }
 
 bool GameNames::Loaded() const { return impl_ != nullptr; }
 
+void GameNames::SetLiveText(std::function<std::string(uint32_t)> fn) {
+  live_ = std::move(fn);
+  if (impl_ && live_) {
+    for (size_t i = 0; i < impl_->abilities.size() && i < impl_->abilityKeys.size(); i++) impl_->abilities[i] = live_(impl_->abilityKeys[i]);
+  }
+}
+
 std::string GameNames::Message(uint32_t key) const {
   if (!impl_) {
     return "";
   }
+  if (live_) return live_(key);
   const uint8_t* t = impl_->Find(key);
   if (t == nullptr) {
     return "";
   }
   std::u16string s;
   for (int n = 0; n < 256; n++) {
-    const uint16_t c = be16(t);
+    const uint16_t c = impl_->littleText ? static_cast<uint16_t>(t[0] | t[1] << 8) : be16(t);
     t += 2;
     if (c == 0) {
       break;
@@ -188,6 +248,13 @@ std::string GameNames::Nature(uint8_t id) const {
     return "";
   }
   return Message(natures[id].name);
+}
+
+std::string GameNames::Ability(uint16_t id) const {
+  if (!impl_ || id >= impl_->abilities.size()) {
+    return "";
+  }
+  return impl_->abilities[id];
 }
 
 }

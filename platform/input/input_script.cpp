@@ -28,6 +28,7 @@ struct Step {
 };
 
 std::vector<Step> sSteps;
+uint32_t sNow = 0;
 bool sVirtual = false;
 std::vector<uint16_t> sKeysDown;
 bool (*sStickFn)(uint32_t field, int8_t* x, int8_t* y) = nullptr;
@@ -119,9 +120,12 @@ bool PortInput_LoadScript(const char* script) {
   return !sSteps.empty();
 }
 
+uint32_t PortInput_ScriptNow(void) { return sNow; }
+
 void PortInput_SetScriptStick(bool (*fn)(uint32_t field, int8_t* x, int8_t* y)) { sStickFn = fn; }
 
 void PortInput_ScriptField(uint32_t field) {
+  sNow = field;
   uint16_t buttons = 0;
   std::vector<uint16_t> keys;
   int8_t cx = 0, cy = 0;

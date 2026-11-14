@@ -1,4 +1,5 @@
 #include "xd_battles_won.h"
+#include "xd_speedrun.h"
 
 #include <algorithm>
 #include <cstdio>
@@ -59,6 +60,7 @@ void Frame() {
   const bool won = sDecided && sHeroWon && sBattle != 0;
   const bool added = won && sWon.insert(sBattle).second;
   if (won) sSinceStart.insert(sBattle);
+  if (sBattle != 0) xd::speedrun::BattleEnded(won, sDecided ? sResult : 0, sBattle);
   if (added) sChanges++;
   if (Log()) {
     std::fprintf(stderr, "[battles won] battle %u over: %s (result %u%s); %zu won in this playthrough\n", sBattle,

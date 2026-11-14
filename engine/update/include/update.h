@@ -73,6 +73,8 @@ struct Layout {
   std::string running;
   std::string current;
   std::string previous;
+  std::string starter;
+  std::vector<std::string> starterNames;
 };
 Layout FindLayout(const std::filesystem::path& programFolder, const std::string& starterName);
 std::filesystem::path GameFolderPath(const Layout& layout, const std::string& name);

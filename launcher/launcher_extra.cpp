@@ -2,10 +2,12 @@
 
 #include "launcher_sys.h"
 
+#include "i18n.h"
 #include <mods.h>
 
 #include <algorithm>
 #include <cctype>
+#include <cstdarg>
 #include <chrono>
 #include <cstdio>
 #include <cstdlib>
@@ -19,6 +21,17 @@ namespace launcher::extra {
 namespace fs = std::filesystem;
 
 namespace {
+
+using engine::i18n::Tr;
+
+std::string Fmt(const char* format, ...) {
+  char buf[2048];
+  va_list args;
+  va_start(args, format);
+  std::vsnprintf(buf, sizeof(buf), format, args);
+  va_end(args);
+  return buf;
+}
 
 std::string Utf8(const fs::path& p) {
   const std::u8string u8 = p.u8string();
@@ -145,8 +158,13 @@ std::vector<std::string> ConverterArguments(const Source& source, const std::str
   return args;
 }
 
+namespace {
+long long JsonNumber(const std::string& json, const std::string& key);
+std::string JsonString(const std::string& json, const std::string& key);
+}
+
 Status ComputeStatus(const fs::path& modFolder, const std::string& expectedModId, bool converterFound,
-                     const std::string& converterVersion) {
+                     const std::string& converterVersion, const std::string& modelsFolder) {
   Status st;
   std::error_code ec;
   bool usable = false;
@@ -157,9 +175,9 @@ Status ComputeStatus(const fs::path& modFolder, const std::string& expectedModId
     engine::mods::Manifest manifest;
     std::string error;
     if (!engine::mods::ParseManifest(json, manifest, error)) {
-      why = "The folder " + Utf8(modFolder) + " is there but its mod.json can't be read (" + error + ").";
+      why = Fmt(Tr("The folder %s is there but its mod.json can't be read (%s)."), Utf8(modFolder).c_str(), error.c_str());
     } else if (manifest.id != expectedModId) {
-      why = "The folder " + Utf8(modFolder) + " holds another mod (" + manifest.id + ").";
+      why = Fmt(Tr("The folder %s holds another mod (%s)."), Utf8(modFolder).c_str(), manifest.id.c_str());
     } else {
       usable = true;
       st.version = manifest.version;
@@ -167,27 +185,46 @@ Status ComputeStatus(const fs::path& modFolder, const std::string& expectedModId
   }
   if (!usable) {
     st.kind = converterFound ? Status::Kind::NotSetUp : Status::Kind::ConverterMissing;
-    st.text = converterFound ? "Not set up" : "Converter missing";
+    st.text = converterFound ? Tr("Not set up") : Tr("Converter missing");
     st.detail = !why.empty() ? why
-                : converterFound ? "Choose the disc below and press Make."
-                                 : "The program that makes the models isn't next to the game, so they can't be made. "
-                                   "Reinstall the game, or get the newest version.";
+                : converterFound ? std::string(Tr("Choose the disc below and press Make."))
+                                 : std::string(Tr("The program that makes the models isn't next to the game, so they can't be made. "
+                                                  "Reinstall the game, or get the newest version."));
     return st;
   }
-  for (auto it = fs::directory_iterator(modFolder / "fsys", ec); !ec && it != fs::directory_iterator(); it.increment(ec)) {
-    if (it->is_directory(ec)) st.models++;
+  std::string unitOne = "model", unitMany = "models", listed;
+  bool customUnits = false;
+  {
+    std::ifstream in(modFolder / "mod.json", std::ios::binary);
+    const std::string json((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+    const long long count = JsonNumber(json, "count");
+    if (count >= 0) {
+      st.models = static_cast<int>(count);
+      if (!JsonString(json, "unit").empty()) unitOne = JsonString(json, "unit"), customUnits = true;
+      if (!JsonString(json, "units").empty()) unitMany = JsonString(json, "units"), customUnits = true;
+      listed = JsonString(json, "detail");
+    } else {
+      for (auto it = fs::directory_iterator(modFolder / modelsFolder, ec); !ec && it != fs::directory_iterator(); it.increment(ec)) {
+        if (modelsFolder == "fsys" ? it->is_directory(ec) : it->is_regular_file(ec)) st.models++;
+      }
+    }
   }
   const bool outOfDate = converterFound && !converterVersion.empty() && !st.version.empty() &&
                          engine::mods::CompareVersions(st.version, converterVersion) < 0;
   if (outOfDate) {
     st.kind = Status::Kind::OutOfDate;
-    st.text = "Out of date: make again";
-    st.detail = "The models were made by an older version of the converter (" + st.version + "; now " + converterVersion +
-                "). They still work; make them again to get the improvements.";
+    st.text = Tr("Out of date: make again");
+    st.detail = Fmt(Tr("The models were made by an older version of the converter (%s; now %s). They still work; make them "
+                       "again to get the improvements."),
+                    st.version.c_str(), converterVersion.c_str());
   } else {
     st.kind = Status::Kind::Ready;
-    st.text = "Ready: " + std::to_string(st.models) + (st.models == 1 ? " model" : " models");
-    if (!converterFound) st.detail = "The converter isn't next to the game any more, so they can't be made again.";
+    st.text = customUnits
+                  ? Fmt(Tr("Ready: %d %s"), st.models, (st.models == 1 ? unitOne : unitMany).c_str())
+              : st.models == 1 ? Fmt(Tr("Ready: %d model"), st.models)
+                               : Fmt(Tr("Ready: %d models"), st.models);
+    if (!listed.empty()) st.text += " (" + listed + ")";
+    if (!converterFound) st.detail = Tr("The converter isn't next to the game any more, so they can't be made again.");
   }
   return st;
 }
@@ -215,6 +252,20 @@ std::string JsonString(const std::string& json, const std::string& key) {
 }
 }
 
+std::vector<std::string> ListNames(const fs::path& jsonFile) {
+  std::vector<std::string> names;
+  std::ifstream in(jsonFile, std::ios::binary);
+  const std::string json((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+  for (size_t at = json.find("\"name\""); at != std::string::npos; at = json.find("\"name\"", at + 6)) {
+    size_t colon = json.find(':', at);
+    size_t open = colon == std::string::npos ? colon : json.find('"', colon);
+    size_t close = open == std::string::npos ? open : json.find('"', open + 1);
+    if (close == std::string::npos) break;
+    names.push_back(json.substr(open + 1, close - open - 1));
+  }
+  return names;
+}
+
 SecondStatus ComputeSecondStatus(const fs::path& folder, const std::string& manifestFile, const std::string& expectedId,
                                  int wantedVersion, const std::string& provides, bool firstOutOfDate) {
   SecondStatus st;
@@ -222,23 +273,26 @@ SecondStatus ComputeSecondStatus(const fs::path& folder, const std::string& mani
   const std::string json((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
   if (!in || JsonString(json, "id") != expectedId) {
     st.kind = SecondStatus::Kind::NotMade;
-    st.text = provides + ": not made yet";
-    st.detail = "It is made together with the models: choose the disc below and press Make.";
+    st.text = Fmt(Tr("%s: not made yet"), Tr(provides).c_str());
+    st.detail = Tr("It is made together with the models: choose the disc below and press Make.");
     return st;
   }
   const long long version = JsonNumber(json, "version");
   st.species = static_cast<int>(std::max<long long>(0, JsonNumber(json, "species")));
   if (version != wantedVersion || firstOutOfDate) {
     st.kind = SecondStatus::Kind::OutOfDate;
-    st.text = provides + ": out of date, make again";
+    st.text = Fmt(Tr("%s: out of date, make again"), Tr(provides).c_str());
     st.detail = version != wantedVersion
-                    ? "It was made for another version of the game (pack " + std::to_string(version) + "; now " +
-                          std::to_string(wantedVersion) + "), so the game won't use it until it is made again."
-                    : "It was made by an older version of the converter. It still works; make it again to get the improvements.";
+                    ? Fmt(Tr("It was made for another version of the game (pack %lld; now %d), so the game won't use it until "
+                             "it is made again."),
+                          version, wantedVersion)
+                    : std::string(Tr("It was made by an older version of the converter. It still works; make it again to get "
+                                     "the improvements."));
     return st;
   }
   st.kind = SecondStatus::Kind::Ready;
-  st.text = provides + ": ready" + (st.species > 0 ? " (" + std::to_string(st.species) + " species)" : std::string());
+  st.text = st.species > 0 ? Fmt(Tr("%s: ready (%d species)"), Tr(provides).c_str(), st.species)
+                           : Fmt(Tr("%s: ready"), Tr(provides).c_str());
   return st;
 }
 
@@ -301,16 +355,19 @@ void DiscCheck::Start(const Source& source, const std::string& path, const GameI
     std::string message;
     if (!identify || !identify(path, gameId, title, error)) {
       result = State::Unreadable;
-      message = "That file can't be read as a disc image" + (error.empty() ? std::string(".") : " (" + error + ").");
+      message = error.empty() ? std::string(Tr("That file can't be read as a disc image."))
+                              : Fmt(Tr("That file can't be read as a disc image (%s)."), error.c_str());
     } else if (AcceptsGameId(source, gameId)) {
       result = State::Good;
-      message = "This is " + source.name + " (" + gameId + "): the right disc.";
+      message = Fmt(Tr("This is %s (%s): the right disc."), source.name.c_str(), gameId.c_str());
     } else {
       std::string wanted;
       for (const std::string& g : source.gameIds) wanted += (wanted.empty() ? "" : ", ") + g;
       result = State::WrongGame;
-      message = "This is " + (title.empty() ? std::string("another game") : title) + " (" + gameId + "), not " +
-                source.name + " (" + wanted + "). Choose the " + source.name + " disc image.";
+      message = title.empty() ? Fmt(Tr("This is another game (%s), not %s (%s). Choose the %s disc image."), gameId.c_str(),
+                                    source.name.c_str(), wanted.c_str(), source.name.c_str())
+                              : Fmt(Tr("This is %s (%s), not %s (%s). Choose the %s disc image."), title.c_str(), gameId.c_str(),
+                                    source.name.c_str(), wanted.c_str(), source.name.c_str());
     }
     std::lock_guard<std::mutex> lock(mutex_);
     message_ = message;
@@ -351,7 +408,7 @@ void MakeJob::Cancel() { cancel_ = true; }
 
 bool MakeJob::Start(const MakeRequest& request, std::string& error) {
   if (running_) {
-    error = "It is already running.";
+    error = Tr("It is already running.");
     return false;
   }
   if (thread_.joinable()) thread_.join();
@@ -369,7 +426,7 @@ bool MakeJob::Start(const MakeRequest& request, std::string& error) {
   start.killTree = true;
   sys::Process* process = sys::StartProgram(start, error);
   if (process == nullptr) {
-    error = "The converter couldn't be started (" + Utf8(request.converter) + ", " + error + ").";
+    error = Fmt(Tr("The converter couldn't be started (%s, %s)."), Utf8(request.converter).c_str(), error.c_str());
     return false;
   }
   cancel_ = false;
@@ -434,7 +491,7 @@ void MakeJob::Run(MakeRequest request, void* processPointer) {
     RemoveLeftovers(request.outFolder);
     if (!request.outFolder2.empty()) RemoveLeftovers(request.outFolder2);
     result.phase = Phase::Cancelled;
-    result.message = "Stopped. Nothing was changed.";
+    result.message = Tr("Stopped. Nothing was changed.");
   } else if (code == 0 && sawDone) {
     result.phase = Phase::Done;
   } else {
@@ -442,12 +499,12 @@ void MakeJob::Run(MakeRequest request, void* processPointer) {
     if (!request.outFolder2.empty()) RemoveLeftovers(request.outFolder2);
     if (code == 2) {
       result.phase = Phase::WrongDisc;
-      result.message = errorText.empty() ? "One of the discs is not the one the converter needs." : errorText;
+      result.message = errorText.empty() ? std::string(Tr("One of the discs is not the one the converter needs.")) : errorText;
     } else {
       result.phase = Phase::Failed;
       result.message = !errorText.empty() ? errorText
-                      : code == 0         ? "The converter stopped without saying it was done."
-                                          : "The converter stopped without saying why (exit code " + std::to_string(code) + ").";
+                      : code == 0         ? std::string(Tr("The converter stopped without saying it was done."))
+                                          : Fmt(Tr("The converter stopped without saying why (exit code %d)."), code);
     }
   }
   std::error_code ec;

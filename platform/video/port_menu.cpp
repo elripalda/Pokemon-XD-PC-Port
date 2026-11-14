@@ -169,7 +169,16 @@ PortMenuInput NextInput(bool live) {
   in.pressed = static_cast<uint16_t>(in.held & ~sLastHeld);
   in.repeat = in.pressed;
   const uint16_t dirs = in.held & kDirs;
-  if ((in.pressed & kDirs) != 0) {
+  if (live) {
+    const uint64_t now = SDL_GetTicks();
+    static uint64_t sNextRepeat = 0;
+    if ((in.pressed & kDirs) != 0) {
+      sNextRepeat = now + 250;
+    } else if (dirs != 0 && now >= sNextRepeat) {
+      sNextRepeat = now + 83;
+      in.repeat |= dirs;
+    }
+  } else if ((in.pressed & kDirs) != 0) {
     sRepeatTimer = 15;
   } else if (dirs != 0 && --sRepeatTimer <= 0) {
     sRepeatTimer = 5;

@@ -1,10 +1,14 @@
 #include "xd_playthrough.h"
+#include "i18n.h"
 #include "xd_added_rows.h"
 #include "xd_battles_won.h"
 #include "xd_challenges.h"
+#include "xd_shiny.h"
 #include "xd_gen4.h"
+#include "xd_modern_types.h"
 
 #include "xd_playthrough_files.h"
+#include "xd_speedrun.h"
 #include "xd_randomizer.h"
 #include "xd_save_picker.h"
 #include "xd_user_folder.h"
@@ -38,6 +42,7 @@ static void SetEnvironmentVariableW(const wchar_t* name, const char* value) {
 #endif
 
 #include <algorithm>
+#include <cstdarg>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -67,6 +72,18 @@ namespace xp = xd::playthrough;
 namespace fs = std::filesystem;
 
 enum class CardState { NoSave, NoFile, Setup, Unreadable };
+using engine::i18n::Tr;
+std::string Fmt(const char* format, ...) {
+  char buf[2048];
+  va_list args;
+  va_start(args, format);
+  std::vsnprintf(buf, sizeof buf, format, args);
+  va_end(args);
+  return buf;
+}
+const char* EngineNameTr(engine::playthrough::Engine e) {
+  return e == engine::playthrough::Engine::Enhanced ? Tr("Enhanced") : Tr("Faithful");
+}
 const char* const kCardStateText[] = {"no save", "a save without a setup file", "a save with its setup",
                                       "a save whose setup file can't be read"};
 
@@ -107,6 +124,8 @@ ep::Engine sPlayersEngine = ep::Engine::Faithful;
 bool sAsk = false;
 bool sEngineAnswered = false;
 bool sNewGameTaken = false;
+bool sNewGameHeld = false;
+bool sNewGamePassOn = false;
 int sInjectA = 0;
 uint32_t sInjectFrom = 0;
 bool sScreen = false;
@@ -162,6 +181,60 @@ void Note(const std::string& what) {
   }
 }
 
+constexpr const char* kSplitId = "gameplay.physical_special_split";
+}
+
+namespace xd::pt {
+std::string SplitNow(ep::Engine engine) {
+  if (engine != ep::Engine::Enhanced) return "";
+  es::Registry& reg = es::Global();
+  const size_t i = reg.Find(kSplitId);
+  if (i == es::kNoSetting) return "";
+  const bool overridden = reg.IsOverridden(i);
+  std::string v;
+  if (overridden) {
+    const std::string now = reg.ValueText(i);
+    reg.ClearOverride(i);
+    v = reg.ValueText(i);
+    reg.Override(kSplitId, now);
+  } else {
+    v = reg.ValueText(i);
+  }
+  return v == "on" ? "on" : "off";
+}
+
+void ApplySplitOf(const ep::Setup* setup, const char* why);
+void ApplySplit(const char* why) { ApplySplitOf(sChosen != Chosen::None && !sCurrentUnknown ? &sCurrent : nullptr, why); }
+void ApplySplitOf(const ep::Setup* setup, const char* why) {
+  es::Registry& reg = es::Global();
+  const size_t i = reg.Find(kSplitId);
+  if (i == es::kNoSetting || EnvIs("XD_REQUIRE_ORIGINAL", "1")) return;
+  const bool inPlay = setup != nullptr && setup->engine == ep::Engine::Enhanced && !setup->split.empty();
+  static bool mine = false;
+  if (inPlay) {
+    reg.Override(kSplitId, setup->split);
+    mine = true;
+    std::fprintf(stderr, "[playthrough] physical/special split %s: kept with this playthrough (%s)\n", setup->split.c_str(), why);
+  } else if (mine) {
+    mine = false;
+    if (setup == nullptr || setup->engine == ep::Engine::Enhanced) reg.ClearOverride(i);
+  }
+}
+
+void AdoptSplit() {
+  if (sCardState != CardState::Setup || sCardSetup.engine != ep::Engine::Enhanced || !sCardSetup.split.empty()) return;
+  if (EnvIs("XD_REQUIRE_ORIGINAL", "1")) return;
+  sCardSetup.split = SplitNow(ep::Engine::Enhanced);
+  if (sCardSetup.split.empty()) return;
+  if (!ep::WriteFile(xp::SetupFileFor(sCardId), sCardSetup)) {
+    std::fprintf(stderr, "[playthrough] could not write %ls (the split is adopted for this run only)\n", xp::SetupFileFor(sCardId).wstring().c_str());
+  }
+  std::fprintf(stderr, "[playthrough] physical/special split adopted from the settings for this playthrough: %s\n", sCardSetup.split.c_str());
+  Note("physical/special split kept with the playthrough from now on: " + sCardSetup.split);
+}
+}
+
+namespace {
 ep::Engine EngineNow() {
   const es::Registry& reg = es::Global();
   for (size_t i = 0; i < reg.Count(); i++) {
@@ -191,6 +264,7 @@ extern "C" void PortXD_PlaythroughBoot(void) {
   if (sCardId.found) {
     std::string error;
     const fs::path file = xp::SetupFileFor(sCardId);
+    std::fprintf(stderr, "[playthrough] the save's setup file: %s\n", file.filename().string().c_str());
     std::error_code ec;
     if (!fs::exists(file, ec)) {
       sCardState = CardState::NoFile;
@@ -205,6 +279,7 @@ extern "C" void PortXD_PlaythroughBoot(void) {
   std::fprintf(stderr, "[playthrough] memory card: %s%s%s (%s)\n", kCardStateText[static_cast<int>(sCardState)],
                sCardId.found ? ", trainer " : "", sCardId.found ? sCardId.trainer.c_str() : "", CardLabel().c_str());
   if (!xd::challenges::TestSwitch().empty()) xd::challenges::SetActive({}, "XD_CHALLENGES");
+  if (!xd::shiny::TestSwitch().empty()) xd::shiny::SetActive(xd::shiny::TestSwitch(), "XD_SHINY");
   if (sCardState == CardState::NoSave) {
     xd::battles::Set({}, true, "start-up: no save on the card");
   } else if (sCardState == CardState::Setup) {
@@ -316,7 +391,7 @@ void AfterModsLoaded(const em::LoadResult& result, const fs::path& modsFolder, c
     sContinueNotes = c.notes;
     for (const ep::ModUse* w : sCardSetup.WorldMods()) {
       const bool loaded = std::any_of(sLoaded.begin(), sLoaded.end(), [&](const ep::ModUse& l) { return Lower(l.id) == Lower(w->id); });
-      if (!loaded && FoundMod(w->id) != nullptr) sContinueProblems.push_back((w->name.empty() ? w->id : w->name) + " could not be used (see the mods message)");
+      if (!loaded && FoundMod(w->id) != nullptr) sContinueProblems.push_back(Fmt(Tr("%s could not be used (see the mods message)"), (w->name.empty() ? w->id : w->name).c_str()));
     }
     for (const std::string& p : sContinueProblems) std::fprintf(stderr, "[playthrough] the save's setup: %s\n", p.c_str());
     for (const std::string& n : sContinueNotes) std::fprintf(stderr, "[playthrough] the save's setup (note): %s\n", n.c_str());
@@ -383,12 +458,38 @@ void PickerAnswer(const xd::picker::Row* row) {
   sRestartNow = true;
 }
 
+void RestartNow(const char* why) {
+  Note(std::string(why) + ": starting again");
+  std::fprintf(stderr, "[playthrough] starting the game again (%s)\n", why);
+  std::fflush(stderr);
+  sRestartNow = true;
+}
+
+bool RestartForRoom(bool gen4) {
+  ep::Setup setup;
+  setup.engine = ep::DefaultEngine(es::Global());
+  setup.mods = sLoaded;
+  if (gen4) setup.challenges.push_back("gen4_rules");
+  const fs::path file = xd::CardRoot() / L"playthroughs" / L"next_new_game.json";
+  if (!ep::WriteFile(file, setup)) {
+    std::fprintf(stderr, "[playthrough] could not write %ls: no restart for the room\n", file.wstring().c_str());
+    return false;
+  }
+  SetEnvironmentVariableW(L"XD_NEWGAME_SETUP", file.c_str());
+  std::fprintf(stderr, "[playthrough] starting the game again for an online room (Gen 4 rules %s)\n", gen4 ? "on" : "off");
+  std::fflush(stderr);
+  xd::picker::SetForRestart(xd::picker::Intent::Title);
+  sRestartNow = true;
+  return true;
+}
+
 Defaults NewGameDefaults() {
   Defaults d;
   d.restarted = sRestarted;
   d.engine = sRestarted ? sRestartSetup.engine : ep::DefaultEngine(es::Global());
   if (sRestarted) d.randomizer = RandomizerOf(sRestartSetup);
   if (sRestarted) d.challenges = sRestartSetup.challenges;
+  d.options = sRestarted ? sRestartSetup.options : xd::shiny::TestSwitch();
   std::vector<std::string> ids = sLibraryOn;
   for (const ep::ModUse& l : sLoaded) {
     if (std::none_of(ids.begin(), ids.end(), [&](const std::string& i) { return Lower(i) == Lower(l.id); })) ids.push_back(l.id);
@@ -429,14 +530,16 @@ void SetRandomizer(ep::Setup& s, const std::string& code) {
 }
 
 ep::Setup SetupOf(ep::Engine engine, const std::vector<ModChoice>& mods, const std::string& randomizer,
-                  const std::vector<std::string>& challenges) {
+                  const std::vector<std::string>& challenges, const std::vector<std::string>& options) {
   ep::Setup s;
   s.engine = engine;
   s.challenges = challenges;
+  s.options = options;
   for (const ModChoice& m : mods) {
     if (m.on) s.mods.push_back({m.id, m.name, m.version, m.applies});
   }
   SetRandomizer(s, randomizer);
+  s.speedrun = xd::speedrun::NewGameDefault();
   s.started = ep::Now();
   s.portVersion = XD_PORT_VERSION;
   return s;
@@ -493,7 +596,19 @@ bool BootGen4Spots() {
   return false;
 }
 
+bool BootModernTypes() {
+  if (EnvIs("XD_REQUIRE_ORIGINAL", "1")) return false;
+  if (HasRule(xd::challenges::TestSwitch(), "modern_types")) return true;
+  if (sRestarted) return HasRule(sRestartSetup.challenges, "modern_types");
+  if (sCardState == CardState::Setup) return HasRule(sCardSetup.challenges, "modern_types");
+  return false;
+}
+
 bool NeedsRestart(const ep::Setup& setup) {
+  if ((HasRule(setup.challenges, "modern_types") || HasRule(xd::challenges::TestSwitch(), "modern_types")) != xd::modern::Loaded() &&
+      !EnvIs("XD_MODS", "0")) {
+    return true;
+  }
   if (RandomizerOf(setup) != sLoadedRandomizer) return true;
   if ((HasGen4(setup.challenges) || HasGen4(xd::challenges::TestSwitch())) && xd::gen4::PackPresent() != xd::gen4::Loaded()) return true;
   if (!HasGen4(setup.challenges) && !HasGen4(xd::challenges::TestSwitch()) && !xd::randomizer::CodeIncludesGen4(RandomizerOf(setup)) &&
@@ -518,6 +633,7 @@ void Begin(const ep::Setup& setup, const std::string& settingsChanged) {
       std::fprintf(stderr, "[playthrough] starting the game again with the mods of this setup: %s\n", ep::Label(setup).c_str());
       std::fflush(stderr);
       sRestartNow = true;
+      sNewGameHeld = false;
       xd::picker::SetForRestart(xd::picker::Intent::NewGame);
       return;
     }
@@ -530,15 +646,31 @@ void Begin(const ep::Setup& setup, const std::string& settingsChanged) {
   sPendingSetup.addedRows = CurrentAddedRows();
   SetRandomizer(sPendingSetup, sLoadedRandomizer);
   sPendingSetup.chosenBy = sScreen ? "screen" : "run";
+  if (sPendingSetup.split.empty()) sPendingSetup.split = SplitNow(sPendingSetup.engine);
   sKeyAtNewGame = sCardId.found ? sCardId.key : std::string();
   sChosen = Chosen::NewGame;
   sChosenFrame = PortVI_GetFlipCount();
   sCurrent = sPendingSetup;
   sCurrentUnknown = false;
   xd::challenges::SetActive(sCurrent.challenges, "new game");
+  xd::shiny::SetActive(sCurrent.options, "new game");
+  ApplySplit("new game");
   xd::challenges::SetState({}, "new game");
   xd::battles::Set({}, true, "new game");
+  xd::speedrun::NewGame(sCurrent.speedrun);
   Note("new game: " + ep::Label(sCurrent));
+  if (sNewGameHeld) {
+    sNewGameHeld = false;
+    sNewGamePassOn = true;
+    sInjectA = 4;
+    sInjectFrom = PortVI_GetFlipCount();
+  }
+}
+
+void NewGameBack() {
+  sNewGameHeld = false;
+  sNewGameTaken = false;
+  Note("new game setup: back to the title menu (nothing chosen)");
 }
 
 bool ChallengesPossible() {
@@ -582,8 +714,8 @@ void EngineAnswer(int answer) {
     std::fprintf(stderr, "[playthrough] the playthrough is %s from now on (was %s): for the game %s\n", ep::EngineName(sCardSetup.engine),
                  ep::EngineName(was), changed.empty() ? "nothing changes this run" : changed.c_str());
     if (changed.find("system.disc_timing") != std::string::npos || changed.find("system.card_timing") != std::string::npos) {
-      PortXD_ShowNote(std::string("Switched to ") + ep::EngineName(sCardSetup.engine) +
-                          ". Loading speed and Memory card speed change the next time you start the game.",
+      PortXD_ShowNote(Fmt(Tr("Switched to %s. Loading speed and Memory card speed change the next time you start the game."),
+                          EngineNameTr(sCardSetup.engine)),
                       7.f);
     }
   } else {
@@ -592,8 +724,10 @@ void EngineAnswer(int answer) {
   sEngineAnswered = true;
   sChosen = Chosen::Continue;
   sChosenFrame = PortVI_GetFlipCount();
+  AdoptSplit();
   sCurrent = sCardSetup;
   sCurrentUnknown = false;
+  ApplySplit("continue, after the engine question");
   sInjectA = 4;
   sInjectFrom = PortVI_GetFlipCount();
   Note("continue: " + ep::Label(sCurrent) +
@@ -607,11 +741,23 @@ ep::Engine EngineQuestionSave() { return sCardSetup.engine; }
 std::vector<std::string> EngineQuestionSettings() { return ep::EngineSettingNames(es::Global()); }
 
 bool ScreenEnabled() { return sScreen; }
+std::string RestartLabel() { return sRestarted ? ep::DisplayLabel(sRestartSetup) : std::string(); }
+bool TimerWatch() { return xd::speedrun::TitleWatchNeeded(sCardState == CardState::Setup && sCardSetup.speedrun.present); }
+void TimerPersist() {
+  if (sCardState != CardState::Setup || !sCardId.found) return;
+  sCardSetup.speedrun = xd::speedrun::TimerState();
+  sCardSetup.stats = xd::speedrun::StatsState();
+  if (!ep::WriteFile(xp::SetupFileFor(sCardId), sCardSetup)) {
+    std::fprintf(stderr, "[playthrough] could not write %ls\n", xp::SetupFileFor(sCardId).wstring().c_str());
+  }
+}
 
 void PadPoll(PADStatus* status) {
+  if (status[0].err == PAD_ERR_NONE) xd::speedrun::NotePad(status[0].stickX, status[0].stickY);
   if (sInjectA > 0) {
     if (PortVI_GetFlipCount() >= sInjectFrom + static_cast<uint32_t>(sInjectA)) {
       sInjectA = 0;
+      sNewGamePassOn = false;
     } else if (status[0].err == PAD_ERR_NONE) {
       status[0].button |= PAD_BUTTON_A;
     }
@@ -628,6 +774,10 @@ bool TitleInput(PADStatus* status, int select, u16 newButtons) {
 
 bool TitleInputImpl(PADStatus* status, int select, u16 newButtons) {
   if ((newButtons & PAD_BUTTON_A) == 0) return false;
+  if (select == 0 && sNewGamePassOn) {
+    sNewGamePassOn = false;
+    return false;
+  }
   if (select == 1 && xd::picker::Possible() && !xd::picker::AnsweredThisRun() && xd::picker::Current() != xd::picker::Intent::Continue) {
     for (int i = 0; i < PAD_MAX_CONTROLLERS; i++) {
       if (status[i].err == PAD_ERR_NONE) status[i].button &= static_cast<u16>(~PAD_BUTTON_A);
@@ -649,6 +799,13 @@ bool TitleInputImpl(PADStatus* status, int select, u16 newButtons) {
     return false;
   }
   if (!sScreen) {
+    if (select == 0) {
+      xd::speedrun::NewGame(xd::speedrun::NewGameDefault());
+    } else if (select == 1 && !(sAsk && !sEngineAnswered)) {
+      xd::speedrun::Continue(sCardState == CardState::Setup ? sCardSetup : ep::Setup{}, sCardId.key, sCardState == CardState::Setup);
+      AdoptSplit();
+      ApplySplitOf(sCardState == CardState::Setup ? &sCardSetup : nullptr, "continue");
+    }
     if (select == 1 && sAsk && !sEngineAnswered) {
       for (int i = 0; i < PAD_MAX_CONTROLLERS; i++) {
         if (status[i].err == PAD_ERR_NONE) status[i].button &= static_cast<u16>(~PAD_BUTTON_A);
@@ -661,18 +818,28 @@ bool TitleInputImpl(PADStatus* status, int select, u16 newButtons) {
   if (select == 0) {
     if (sNewGameTaken && sChosen == Chosen::NewGame && sPending) {
       Note("new game again: the setup chosen before (" + ep::Label(sCurrent) + ")");
-      std::string label = ep::Label(sCurrent);
+      std::string label = ep::DisplayLabel(sCurrent);
       for (size_t at; (at = label.find("\xC2\xB7")) != std::string::npos;) label.replace(at, 2, "-");
-      PortXD_ShowNote("New Game: " + label + " (as chosen before)", 4.f);
+      PortXD_ShowNote(Fmt(Tr("New Game: %s (as chosen before)"), label.c_str()), 4.f);
       return false;
     }
     sNewGameTaken = true;
     sContinueAccepted = false;
     if (sScreen) {
-      if (!PortXD_OpenNewGameSetup()) std::fprintf(stderr, "[playthrough] the New Game setup screen could not open\n");
+      if (!PortXD_OpenNewGameSetup()) {
+        std::fprintf(stderr, "[playthrough] the New Game setup screen could not open\n");
+        return false;
+      }
+      for (int i = 0; i < PAD_MAX_CONTROLLERS; i++) {
+        if (status[i].err == PAD_ERR_NONE) status[i].button &= static_cast<u16>(~PAD_BUTTON_A);
+      }
+      PortInput_LatchHeld();
+      sNewGameHeld = true;
+      return true;
     } else {
       ep::Setup s = SetupOf(EngineNow(), {}, sLoadedRandomizer,
-                            sRestarted ? sRestartSetup.challenges : xd::challenges::TestSwitch());
+                            sRestarted ? sRestartSetup.challenges : xd::challenges::TestSwitch(),
+                            sRestarted ? sRestartSetup.options : xd::shiny::TestSwitch());
       s.mods = sLoaded;
       Begin(s, "");
     }
@@ -684,8 +851,12 @@ bool TitleInputImpl(PADStatus* status, int select, u16 newButtons) {
     sChosen = Chosen::Continue;
     sChosenFrame = PortVI_GetFlipCount();
     sCurrentUnknown = sCardState != CardState::Setup;
+    AdoptSplit();
     if (sCardState == CardState::Setup) sCurrent = sCardSetup;
+    ApplySplit("continue");
     xd::challenges::SetActive(sCardState == CardState::Setup ? sCurrent.challenges : std::vector<std::string>(), "continue");
+    xd::shiny::SetActive(!xd::shiny::TestSwitch().empty() ? xd::shiny::TestSwitch()
+                         : sCardState == CardState::Setup ? sCurrent.options : std::vector<std::string>(), "continue");
     xd::challenges::SetState(sCardState == CardState::Setup ? sCurrent.challengeState : std::vector<std::string>(), "continue");
     if (sCardState == CardState::Setup) {
       xd::battles::Set(sCurrent.battlesWon, sCurrent.battlesWonKept, "continue");
@@ -709,11 +880,14 @@ bool TitleInputImpl(PADStatus* status, int select, u16 newButtons) {
       return false;
     }
     if (!sContinueNotes.empty() && sScreen) {
-      std::string text = "This save's setup had: ";
-      for (size_t i = 0; i < sContinueNotes.size(); i++) text += (i > 0 ? "; " : "") + sContinueNotes[i];
-      PortXD_ShowNote(text + ". The game carries on without it.", 6.f);
+      std::string list;
+      for (size_t i = 0; i < sContinueNotes.size(); i++) list += (i > 0 ? "; " : "") + sContinueNotes[i];
+      PortXD_ShowNote(Fmt(Tr("This save's setup had: %s. The game carries on without it."), list.c_str()), 6.f);
     }
-    if (!again) Note(std::string("continue: ") + (sCurrentUnknown ? ep::UnknownLabel() : ep::Label(sCurrent)));
+    if (!again) {
+      xd::speedrun::Continue(sCardState == CardState::Setup ? sCardSetup : ep::Setup{}, sCardId.key, sCardState == CardState::Setup);
+      Note(std::string("continue: ") + (sCurrentUnknown ? ep::UnknownLabel() : ep::Label(sCurrent)));
+    }
   }
   return false;
 }
@@ -726,10 +900,11 @@ int PortXD_SaveBoundToOtherRows(char* text, size_t size) {
   if (sCardState != CardState::Setup || sCardSetup.addedRows.empty()) return 0;
   const std::vector<std::string> bound = ep::BoundProblems(sCardSetup, CurrentAddedRows());
   if (bound.empty()) return 0;
-  std::string out = "The save on the memory card holds Pokemon, moves or items that mods added, and their numbers would mean other "
-                    "things without the same mods: ";
-  for (size_t i = 0; i < bound.size() && i < 3; i++) out += (i > 0 ? "; " : "") + bound[i];
-  out += ". Nothing on the card is read or changed.";
+  std::string list;
+  for (size_t i = 0; i < bound.size() && i < 3; i++) list += (i > 0 ? "; " : "") + bound[i];
+  const std::string out = Fmt(Tr("The save on the memory card holds Pokemon, moves or items that mods added, and their numbers would "
+                                 "mean other things without the same mods: %s. Nothing on the card is read or changed."),
+                              list.c_str());
   std::snprintf(text, size, "%s", out.c_str());
   return 1;
 }
@@ -759,6 +934,7 @@ const char* PortXD_PlaythroughReport(void) {
 void PortXD_PlaythroughSaveWritten(const uint8_t* file, size_t size) {
   const xp::SaveId id = xp::SaveIdOf(std::vector<uint8_t>(file, file + size));
   if (!id.found) return;
+  xd::speedrun::SaveWritten();
   if (sPending && id.key != sKeyAtNewGame) {
     sPendingSetup.trainer = id.trainer;
     sPendingSetup.trainerId = id.trainerId;
@@ -766,6 +942,8 @@ void PortXD_PlaythroughSaveWritten(const uint8_t* file, size_t size) {
     const fs::path f = xp::SetupFileFor(id);
     sPendingSetup.battlesWonKept = xd::battles::Complete();
     sPendingSetup.battlesWon = xd::battles::List();
+    sPendingSetup.speedrun = xd::speedrun::TimerState();
+    sPendingSetup.stats = xd::speedrun::StatsState();
     if (ep::WriteFile(f, sPendingSetup)) {
       std::fprintf(stderr, "[playthrough] the new playthrough's setup is kept next to its save: %ls\n", f.wstring().c_str());
       Note("setup kept for " + id.trainer + ": " + ep::Label(sPendingSetup));
@@ -784,7 +962,7 @@ void PortXD_PlaythroughSaveWritten(const uint8_t* file, size_t size) {
     const fs::path f = xp::SetupFileFor(id);
     std::error_code ec;
     if (!fs::exists(f, ec)) {
-      ep::Setup s = xd::pt::SetupOf(EngineNow(), {}, sLoadedRandomizer, xd::challenges::TestSwitch());
+      ep::Setup s = xd::pt::SetupOf(EngineNow(), {}, sLoadedRandomizer, xd::challenges::TestSwitch(), xd::shiny::Active());
       s.mods = sLoaded;
       s.addedRows = CurrentAddedRows();
       s.trainer = id.trainer;
@@ -794,6 +972,8 @@ void PortXD_PlaythroughSaveWritten(const uint8_t* file, size_t size) {
       xd::battles::Set(xd::battles::SinceStart(), true, "a new game's first save");
       s.battlesWonKept = true;
       s.battlesWon = xd::battles::List();
+      s.speedrun = xd::speedrun::TimerState();
+      s.stats = xd::speedrun::StatsState();
       if (ep::WriteFile(f, s)) {
         std::fprintf(stderr, "[playthrough] a new game's first save (no setup screen this run): setup kept next to it: %ls\n",
                      f.wstring().c_str());
@@ -835,6 +1015,22 @@ void PortXD_PlaythroughSaveWritten(const uint8_t* file, size_t size) {
     if (sChosen != Chosen::None && !sCurrentUnknown) sCurrent.battlesWon = sCardSetup.battlesWon;
     std::fprintf(stderr, "[playthrough] battles won kept with the save: %zu\n", sCardSetup.battlesWon.size());
   }
+  if (sCardState == CardState::Setup && xd::speedrun::PlaythroughChosen()) {
+    sCardSetup.speedrun = xd::speedrun::TimerState();
+    sCardSetup.stats = xd::speedrun::StatsState();
+    if (sCardSetup.speedrun.present || sCardSetup.stats.kept) {
+      if (!ep::WriteFile(xp::SetupFileFor(id), sCardSetup)) {
+        std::fprintf(stderr, "[playthrough] could not write %ls\n", xp::SetupFileFor(id).wstring().c_str());
+      } else if (sCardSetup.speedrun.present) {
+        std::fprintf(stderr, "[playthrough] timer kept with the save: real time %u ms, loads %u ms, %zu split(s)\n",
+                     sCardSetup.speedrun.rtaMs, sCardSetup.speedrun.loadMs, sCardSetup.speedrun.splits.size());
+      }
+    }
+    if (sChosen != Chosen::None && !sCurrentUnknown) {
+      sCurrent.speedrun = sCardSetup.speedrun;
+      sCurrent.stats = sCardSetup.stats;
+    }
+  }
   sCardId = id;
   xd::picker::ThumbnailAfterSave(xp::SetupFolder() / (id.key + ".png"));
 }
@@ -842,6 +1038,15 @@ void PortXD_PlaythroughSaveWritten(const uint8_t* file, size_t size) {
 void PortXD_PlaythroughFrame(void) {
   xd::picker::ThumbnailFrame();
   xd::battles::Frame();
+  if (!xd::speedrun::PlaythroughChosen() && xd::speedrun::MapStarted()) {
+    if (sCardState == CardState::NoSave) {
+      xd::speedrun::NewGame(xd::speedrun::NewGameDefault());
+    } else {
+      xd::speedrun::Continue(sCardState == CardState::Setup ? sCardSetup : ep::Setup{}, sCardId.key, sCardState == CardState::Setup);
+    }
+  }
+  xd::speedrun::SetEngine(sChosen != Chosen::None && !sCurrentUnknown && !sCurrent.PureFaithful());
+  xd::speedrun::Frame();
   xd::challenges::Frame();
   if (sRestartNow) {
     OSResetSystem(0, 0, 0);

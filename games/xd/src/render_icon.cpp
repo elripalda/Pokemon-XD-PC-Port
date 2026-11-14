@@ -18,6 +18,7 @@ struct GSgfxLayer : public GSgfxLayerData {};
 #include <game/effects.h>
 
 #include <port_disc.h>
+#include "xd_gen4.h"
 #include <port_user_folder.h>
 
 #include <algorithm>
@@ -69,6 +70,7 @@ void* GSresGetResourceAllGroup(u32 id);
 GSthread* GSthreadCreate(u8 affinity, u32 group, u32 stackSize, u8 usesFPU, u8 autoStart, void* entry);
 s32 GSfloorGetCurrentFloorGroupID(void);
 void* Sequence_LoadPokemon(u16 id, u32 variant, bool rare);
+uintptr_t pokemonGetStatus(void* pokemon, u16 id, u16 kind, u16 index);
 void* Sequence_LoadTrainer(u16 id);
 _GSmodel* Sequence_GetGSmodel(void* seq);
 void Sequence_SetVisibility(void* seq, bool visible);
@@ -92,6 +94,7 @@ struct Job {
   void* sequence = nullptr;
   _GSmodel* model = nullptr;
   bool refined = false;
+  bool offer = false;
   bool failed = false;
   std::string note;
   std::vector<uint8_t> rgba;
@@ -99,8 +102,9 @@ struct Job {
 };
 
 std::vector<Job> sJobs;
+void WriteOfferPicture(Job& job);
 size_t sCurrent = 0;
-std::string sIconDir, sBgDir;
+std::string sIconDir, sBgDir, sOfferDir;
 int sSize = 1024;
 void (*sPrevious)(uint32_t) = nullptr;
 bool sStarted = false;
@@ -108,7 +112,7 @@ uint32_t sTitleSince = 0;
 GSthread* sLoader = nullptr;
 GScamera* sCamera = nullptr;
 GSlight* sLights[3] = {};
-AuroraReadbackStream sStreams[2] = {};
+AuroraReadbackStream sStreams[3] = {};
 std::vector<uint8_t> sPixels[2];
 int sMade = 0, sFailed = 0;
 FILE* sReport = nullptr;
@@ -339,7 +343,8 @@ void UseOwnLights(bool on) {
 
 s32 LoadThread() {
   Job& job = sJobs[sCurrent];
-  job.sequence = job.kind == Kind::Pokemon ? Sequence_LoadPokemon((u16)job.number, 0, job.shiny)
+  const u16 id = job.offer ? (u16)pokemonGetStatus(nullptr, (u16)job.number, 0x66, 0) : (u16)job.number;
+  job.sequence = job.kind == Kind::Pokemon ? Sequence_LoadPokemon(id, 0, job.shiny)
                                            : Sequence_LoadTrainer((u16)job.number);
   if (job.sequence != nullptr) job.model = Sequence_GetGSmodel(job.sequence);
   sLoader = nullptr;
@@ -493,7 +498,7 @@ void OnRender(GSgfxLayer* layer, int pass) {
   GSmodelSetRenderCamera(job.model, sCamera);
   if (own) UseOwnLights(true);
   const bool black = sModelPhase == 0;
-  DrawModel(layer, job.model, GXColor{0, 0, 0, 0}, 0);
+  DrawModel(layer, job.model, GXColor{0, 0, 0, 0}, 2);
   DrawModel(layer, job.model, black ? GXColor{0, 0, 0, 0} : GXColor{255, 255, 255, 255}, black ? 0 : 1);
   if (own) UseOwnLights(false);
   GSmodelSetRenderCamera(job.model, nullptr);
@@ -594,6 +599,10 @@ void Collect(uint32_t frame) {
     return;
   }
   job.width = job.height = sSize;
+  if (job.offer) {
+    WriteOfferPicture(job);
+    return;
+  }
   const std::string file = sIconDir + kSep + job.name + ".png";
   if (WritePng(file, sSize, sSize, job.rgba)) {
     job.note = note;
@@ -601,6 +610,67 @@ void Collect(uint32_t frame) {
   } else {
     job.failed = true, job.note = "could not write " + file;
   }
+}
+
+constexpr int kOfferW = 110, kOfferH = 122;
+
+void WriteOfferPicture(Job& job) {
+  int w = kOfferW, h = kOfferH;
+  const int s = job.width;
+  int x0 = s, y0 = s, x1 = -1, y1 = -1;
+  std::vector<float> premul(static_cast<size_t>(s) * s * 4);
+  for (int y = 0; y < s; y++) {
+    for (int x = 0; x < s; x++) {
+      const uint8_t* p = &job.rgba[(static_cast<size_t>(y) * s + x) * 4];
+      float* o = &premul[(static_cast<size_t>(y) * s + x) * 4];
+      const float a = p[3] / 255.f;
+      o[0] = p[0] / 255.f * a, o[1] = p[1] / 255.f * a, o[2] = p[2] / 255.f * a, o[3] = a;
+      if (p[3] > 8) x0 = std::min(x0, x), y0 = std::min(y0, y), x1 = std::max(x1, x), y1 = std::max(y1, y);
+    }
+  }
+  if (x1 < 0) {
+    job.failed = true, job.note = "nothing was drawn";
+    return;
+  }
+  const float bw = static_cast<float>(x1 - x0 + 1), bh = static_cast<float>(y1 - y0 + 1);
+  const float scale = std::min(0.86f * h / bh, 0.88f * w / bw);
+  const float cx = (x0 + x1 + 1) * 0.5f;
+  const float cy = (y1 + 1) + h / (2.f * scale) - 0.95f * h / scale;
+  std::vector<uint8_t> pic = Resample(premul, s, s, cx, cy, w / scale, h / scale, w, h);
+  std::vector<uint8_t> out(static_cast<size_t>(w) * h * 4);
+  for (int y = 0; y < h; y++) {
+    for (int x = 0; x < w; x++) {
+      const float dx = std::max({6.f - x - 0.5f, x + 0.5f - (w - 6.f), 0.f}), dy = std::max({6.f - y - 0.5f, y + 0.5f - (h - 6.f), 0.f});
+      const float mask = std::clamp(6.5f - std::sqrt(dx * dx + dy * dy), 0.f, 1.f);
+      const uint8_t* p = &pic[(static_cast<size_t>(y) * w + x) * 4];
+      const float a = p[3] / 255.f;
+      uint8_t* o = &out[(static_cast<size_t>(y) * w + x) * 4];
+      for (int c = 0; c < 3; c++) o[c] = static_cast<uint8_t>(std::lround(74.f * (1.f - a) + p[c] * a));
+      o[3] = static_cast<uint8_t>(std::lround(mask * 255.f));
+    }
+  }
+  const std::string file = sOfferDir + kSep + job.name + ".rgba";
+  const std::string part = file + ".part";
+  std::error_code ec;
+#if defined(_WIN32)
+  FILE* f = _wfopen(Widen(part).c_str(), L"wb");
+#else
+  FILE* f = std::fopen(part.c_str(), "wb");
+#endif
+  const uint32_t head[3] = {0x3152464Fu, static_cast<uint32_t>(w), static_cast<uint32_t>(h)};
+  bool ok = f != nullptr && std::fwrite(head, 4, 3, f) == 3 && std::fwrite(out.data(), 1, out.size(), f) == out.size();
+  if (f != nullptr) std::fclose(f);
+  if (ok) {
+    std::filesystem::rename(PathOf(part), PathOf(file), ec);
+    ok = !ec;
+  }
+  if (!ok) {
+    std::filesystem::remove(PathOf(part), ec);
+    job.failed = true, job.note = "could not write " + file;
+    return;
+  }
+  job.note = "offer picture " + std::to_string(w) + "x" + std::to_string(h);
+  std::fprintf(stderr, "[render icon] wrote %s\n", file.c_str());
 }
 
 void OnFrame(uint32_t frame) {
@@ -634,6 +704,7 @@ void OnFrame(uint32_t frame) {
         }
         sStreams[0] = AuroraReadbackCreateStream();
         sStreams[1] = AuroraReadbackCreateStream();
+        sStreams[2] = AuroraReadbackCreateStream();
         if (sCamera == nullptr || sLights[1] == nullptr || sLights[2] == nullptr) {
           std::fprintf(stderr, "[render icon] the game has no free camera or lights\n");
           finish(3);
@@ -731,6 +802,18 @@ bool AddItem(const std::string& item) {
     return AddItem("shadow_lugia") && AddItem("eevee") && AddItem("michael") && AddItem("logo") &&
            AddItem("title_scene") && AddItem("lugia_sky") && AddItem("duel_sky");
   }
+  if (item == "offer") {
+    uint32_t species[2] = {0, 0};
+    if (!xd::gen4::EeveeOfferSpecies(species[0], species[1])) {
+      std::fprintf(stderr, "[render icon] offer: the Gen 4 pack is not loaded in this run (XD_CHALLENGES=gen4_rules and the pack)\n");
+      return false;
+    }
+    for (uint32_t s : species) {
+      add(Kind::Pokemon, static_cast<int>(s), false, "offer_" + std::to_string(s));
+      sJobs.back().offer = true;
+    }
+    return true;
+  }
   if (item == "logo") return add(Kind::Logo, 0, false, "logo");
   if (item == "title_scene") return add(Kind::Scene, 0, false, "title_scene");
   if (item == "lugia_sky") return add(Kind::LugiaSky, 0, false, "lugia_sky");
@@ -820,6 +903,7 @@ extern "C" void PortXD_RenderIconStart(void) {
   if (size != nullptr && size[0] != '\0') sSize = std::clamp(std::atoi(size), 16, 2048);
   sIconDir = Folder("XD_RENDER_ICON_DIR", (std::string(kSep) + "icons" + kSep + "rendered").c_str());
   sBgDir = Folder("XD_RENDER_BG_DIR", (std::string(kSep) + "backgrounds" + kSep + "rendered").c_str());
+  sOfferDir = Folder("XD_RENDER_OFFER_DIR", (std::string(kSep) + "icons" + kSep + "offer").c_str());
 #if defined(_WIN32)
   sReport = _wfopen(Widen(sIconDir + kSep + "render_icon.txt").c_str(), L"w");
 #else

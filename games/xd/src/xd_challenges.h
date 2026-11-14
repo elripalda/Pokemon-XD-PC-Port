@@ -8,8 +8,8 @@ namespace xd::challenges {
 
 struct Rule {
   const char* id;
-  const char* label;
-  const char* info;
+  const char* (*label)();
+  const char* (*info)();
 };
 
 const std::vector<Rule>& Rules();

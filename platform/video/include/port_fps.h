@@ -11,6 +11,8 @@ void PortFps_Frame(uint32_t gamePictures, uint32_t fields);
 
 void PortVideo_Notice(const char* text, double seconds);
 
+void PortVideo_SetNoticeDrawer(bool (*draw)(const char* text));
+
 #ifdef __cplusplus
 }
 #endif

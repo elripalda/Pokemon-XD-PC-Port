@@ -205,6 +205,7 @@ struct FramePlan {
 
 const WindowPlan* sWindow = nullptr;
 int sShift = 0;
+int sMirDx = 0, sMirDy = 0;
 int sBar = 0;
 
 template <class F> void for_each_sprite(const void* first, F&& f) {
@@ -255,7 +256,32 @@ void plan_window(WindowPlan& p) {
   p.right = right[use];
   if (p.left > p.right) return;
   p.shift = side_shift(p.left, p.right);
-  if (p.shift != 0 || p.right - p.left <= kMaxWidth) return;
+  if (p.shift != 0) return;
+  if (use == 0 && p.right - p.left > kMaxWidth) {
+    int pl = 1 << 30, pr = -(1 << 30), pt = 1 << 30, pb = -(1 << 30);
+    for_each_sprite(w->itemSprites, [&](const SpriteWorkLayout* sp) {
+      if (!picture(sp) || hook(sp)) return;
+      const Box b = box_at(sp);
+      pl = std::min(pl, b.x0);
+      pr = std::max(pr, b.x1);
+      pt = std::min(pt, b.y0);
+      pb = std::max(pb, b.y1);
+    });
+    const int plainShift = pl <= pr ? side_shift(pl, pr) : 0;
+    bool onTop = plainShift != 0;
+    for_each_sprite(w->itemSprites, [&](const SpriteWorkLayout* sp) {
+      if (!onTop || !hook(sp) || (sp->flags & 3) == 0 || sp->w == 0 || sp->h == 0) return;
+      const Box b = box_at(sp);
+      onTop = b.x0 >= pl - kTouch && b.x0 <= pr + kTouch && b.y0 >= pt - kTouch && b.y0 <= pb + kTouch;
+    });
+    if (onTop) {
+      p.left = pl;
+      p.right = pr;
+      p.shift = plainShift;
+      return;
+    }
+  }
+  if (p.right - p.left <= kMaxWidth) return;
   std::vector<int> group(pics.size());
   for (size_t i = 0; i < pics.size(); ++i) group[i] = static_cast<int>(i);
   auto find = [&](int i) {
@@ -505,9 +531,12 @@ bool edge_menus_on() {
 
 }
 
+extern "C" int OnlineMirror_WindowShift(const void* window, const void* sprite, int* dx, int* dy);
 extern "C" void PortXD_WideMenuSprite(const void* window, const void* sprite) {
   sWindow = nullptr;
   sShift = 0;
+  sMirDx = sMirDy = 0;
+  if (window != nullptr) OnlineMirror_WindowShift(window, sprite, &sMirDx, &sMirDy);
   if (!edge_menus_on()) return;
   sWindow = plan_of(window);
   if (sWindow == nullptr) return;
@@ -523,6 +552,7 @@ extern "C" void PortXD_WideMenuSpriteDone(void) { sShift = sWindow != nullptr &&
 extern "C" void PortXD_MenuSpriteSetOffset(s32 layer, s16 x, s16 y) {
   sWindow = nullptr;
   sShift = 0;
+  sMirDx = sMirDy = 0;
   spriteSetOffset(layer, x, y);
 }
 
@@ -542,13 +572,13 @@ extern "C" void spriteSetScissor(s32 layer, s32 x, s32 y, s32 w, s32 h) {
 }
 
 extern "C" void spriteSetEnv(s32 layer) {
-  if (sShift == 0) {
+  if (sShift == 0 && sMirDx == 0 && sMirDy == 0) {
     PortXD_RealSpriteSetEnv(layer);
     return;
   }
   s16 x = 0, y = 0;
   spriteGetOffset(layer, &x, &y);
-  spriteSetOffset(layer, static_cast<s16>(x + sShift), y);
+  spriteSetOffset(layer, static_cast<s16>(x + sShift + sMirDx), static_cast<s16>(y + sMirDy));
   PortXD_RealSpriteSetEnv(layer);
   spriteSetOffset(layer, x, y);
 }

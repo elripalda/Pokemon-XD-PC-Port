@@ -26,8 +26,21 @@ struct TextFix {
   bool Empty() const { return messages.empty(); }
 };
 
+struct StarterPlan {
+  bool on = false;
+  uint32_t choice = 0;
+  uint32_t species[3] = {};
+  uint32_t count = 0;
+  uint32_t level = 10;
+  bool natural = true;
+  uint32_t moves[3][4] = {};
+};
+constexpr uint32_t kStarterEevee = 0x85;
+constexpr uint32_t kStarterEeveeMoves[4] = {0x21, 0x27, 0x2C, 0x1C};
+
 struct Result {
   engine::randomizer::ModOutput mod;
+  StarterPlan starter;
   TextFix text;
   std::string code;
   std::string GameJson(const std::string& note) const;

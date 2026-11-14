@@ -55,7 +55,7 @@ int main(int argc, char** argv) {
   bool sharedForAll = true, controlsWork = true;
   for (size_t i = 0; i < r.Count(); i++) {
     const es::Definition& d = r.Get(i);
-    if (i != purify && i != devMenu) {
+    if (i != purify && i != devMenu && d.id != "system.language" && d.id.rfind("system.extra_disc.", 0) != 0) {
       sharedForAll &= d.games.empty();
     }
     if (d.category == es::Category::Controls && d.id.rfind("controls.", 0) != 0) {

@@ -201,6 +201,7 @@ int link_module(void* module, void* bss) {
   }
   const size_t size = Rel_FileExtent(file);
   static XDCommonTables tables;
+  PortXD_SetLiveCommonTables(&tables);
   char error[512];
   if (size == 0 || !PortXD_ConvertCommonRel(file, size, &tables, error, sizeof(error))) {
     stop(size == 0 ? "common_rel: the loaded module doesn't look like a REL" : error);

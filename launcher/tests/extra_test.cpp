@@ -140,6 +140,19 @@ static void TestStatus(const fs::path& root) {
   fs::remove_all(mod / "fsys");
   st = ex::ComputeStatus(mod, "battle-revolution-models", true, "1.0.0");
   CHECK(st.kind == K::Ready && st.models == 0 && st.text == "Ready: 0 models");
+
+
+  const fs::path colo = root / "status" / "colosseum-characters";
+  Write(colo / "mod.json", ModJson("colosseum-characters", "1.0.0"));
+  for (const char* n : {"ken_a1", "hizuki_a1"}) Write(colo / "models" / (std::string(n) + ".pkx"), "x");
+  st = ex::ComputeStatus(colo, "colosseum-characters", true, "1.0.0", "models");
+  CHECK(st.kind == K::Ready && st.models == 2 && st.text == "Ready: 2 models");
+  Write(colo / "characters.json",
+        "{\n \"id\": \"colosseum-characters\",\n \"version\": 1,\n \"characters\": [\n"
+        "  {\"id\": \"ken_a1\", \"name\": \"Wes\", \"group\": \"Hero\"},\n  {\"id\": \"hizuki_a1\", \"name\": \"Rui\", \"group\": \"Hero\"}\n ]\n}\n");
+  const std::vector<std::string> names = ex::ListNames(colo / "characters.json");
+  CHECK(names.size() == 2 && names[0] == "Wes" && names[1] == "Rui");
+  CHECK(ex::ListNames(colo / "nothing.json").empty());
 }
 
 static void TestSecond(const fs::path& root) {

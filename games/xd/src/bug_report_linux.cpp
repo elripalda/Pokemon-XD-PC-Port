@@ -36,6 +36,9 @@
 #include <mutex>
 #include <sstream>
 #include <string>
+#include <cstdarg>
+
+#include "i18n.h"
 #include <system_error>
 #include <thread>
 #include <vector>
@@ -52,6 +55,19 @@ uint32_t VIGetRetraceCount(void);
 }
 
 namespace {
+
+using engine::i18n::Tr;
+std::string TrFmt(const char* format, ...) {
+  va_list args, again;
+  va_start(args, format);
+  va_copy(again, args);
+  const int n = std::vsnprintf(nullptr, 0, format, args);
+  va_end(args);
+  std::string out(static_cast<size_t>(n > 0 ? n : 0), '\0');
+  if (n > 0) std::vsnprintf(out.data(), out.size() + 1, format, again);
+  va_end(again);
+  return out;
+}
 
 namespace fs = std::filesystem;
 
@@ -301,7 +317,8 @@ bool WriteBundle(Press& p) {
 
 void Save(Press p) {
   const bool zipped = WriteBundle(p);
-  sDoneText = " - bug report saved: " + p.name + (zipped ? ".zip" : "") + " (in " + ReportsFolder().string() + ")";
+  sDoneText = " - " + TrFmt(Tr("Bug report saved: %s (in %s)"), (p.name + (zipped ? ".zip" : "")).c_str(),
+                            ReportsFolder().string().c_str());
   sState = 2;
 }
 
@@ -512,7 +529,7 @@ void PortXD_BugReport(void*, uint32_t field, uint32_t gameFrame) {
       const char* title = SDL_GetWindowTitle(window);
       sTitle = title != nullptr ? title : "";
     }
-    SDL_SetWindowTitle(window, (sTitle + " - saving bug report...").c_str());
+    SDL_SetWindowTitle(window, (sTitle + " - " + Tr("Saving bug report...")).c_str());
     sNoticeShown = true;
     sNoticeUntil = 0;
   }

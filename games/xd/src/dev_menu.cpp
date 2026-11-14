@@ -51,6 +51,12 @@ void heroAddPokedoru(void* hero, u32 amount);
 u32 floorGetNextFloorID(void);
 void gamedatasaveSetStatus(void* save, u32 kind, u32 value);
 s32 memcardTaskCall(s32 kind, s32 type, s32 arg);
+void menuPcBoxMain(void);
+void fadeSet(s32 type, f32 time);
+s8 fadeCheck(s32 wait);
+void menuOffScreenSetDisp(s32 on);
+extern "C" s32 PortXD_FieldEvolve(void* pokemon, s32 kind, s32 item);
+s32 pokemonEvolutionAll(void* pokemon, u16 species, u16 extra, void* info, void* hero, s32 writeMemo, s32 mode, s32 fade);
 void heroAddPokecoupon(void* hero, s32 amount);
 uintptr_t heroGetStatus(void* hero, u32 selector, u16 index);
 u8 pokemonIsDarkPokemon(void* pokemon);
@@ -64,6 +70,11 @@ uintptr_t gamedataGetStatus(void* gamedata, u32 kind);
 s32 heroCatchPokemon(void* hero, void* pokemon, u32 arg3, u32 arg4, u8 allowPCBox);
 void memoDataSet(u32 kind, void* pokemon);
 void pokemonBiosSetItemDataId(void* pokemon, u16 item);
+void* fightFloorGetFightOutBanmeToValidFightOutPokemon(void* floor, u16 banme);
+void fightOutPokemonWriteJoutaiDataId(void* fop, u16 id, u32 value);
+void fightOutPokemonSetKaisuuJoutaiDataId(void* fop, u16 id, u8 value);
+void fightOutPokemonSetNowKaisuuJoutaiDataId(void* fop, u16 id, u8 value);
+u8 fightOutPokemonIsJoutaiDataId(void* fop, u16 id);
 void pokemonBiosSetTokuseiFlag(void* pokemon, bool second);
 void pcboxAddItem(void* pcbox, u16 id, u16 n);
 void pokemonSetOnZukanFlag(void* pokemon, u8 caught);
@@ -343,6 +354,18 @@ void Perform(const std::string& action) {
     }
     pokemonBiosSetItemDataId(p, static_cast<u16>(item));
     sStatus = "hold: party slot " + std::to_string(slot) + " holds item " + std::to_string(item);
+  } else if (k == "confuse") {
+    const long slot = Num(w, 1, 0);
+    void* p = fightIsFight() != 0 && slot >= 0 && slot <= 3 ? fightFloorGetFightOutBanmeToValidFightOutPokemon(nullptr, static_cast<u16>(slot)) : nullptr;
+    if (p == nullptr) {
+      sStatus = "confuse: <battle slot 0-3>, in a battle";
+      return;
+    }
+    fightOutPokemonWriteJoutaiDataId(p, 9, 1);
+    fightOutPokemonSetKaisuuJoutaiDataId(p, 9, 5);
+    fightOutPokemonSetNowKaisuuJoutaiDataId(p, 9, 0);
+    sStatus = "confuse: battle slot " + std::to_string(slot) + (fightOutPokemonIsJoutaiDataId(p, 9) == 1 ? " is confused" : " could not be confused");
+    std::fprintf(stderr, "[dev menu] %s\n", sStatus.c_str());
   } else if (k == "zukan") {
     const long species = Num(w, 1, 0);
     const long caught = Num(w, 2, 1);
@@ -381,6 +404,32 @@ void Perform(const std::string& action) {
     gamedatasaveSetStatus(nullptr, 5, floorGetNextFloorID());
     const s32 r = memcardTaskCall(4, 2, 0);
     sStatus = r == 4 ? "save: saved (memory card result 4)" : "save: FAILED, memory card result " + std::to_string(r);
+  } else if (k == "evolve") {
+    const int slot = w.size() > 1 ? std::atoi(w[1].c_str()) : 0;
+    const uint16_t species = static_cast<uint16_t>(Num(w, 2, 0));
+    void* p = slot >= 1 && slot <= 6 ? reinterpret_cast<void*>(heroGetStatus(nullptr, 3, static_cast<u16>(slot - 1))) : nullptr;
+    if (p == nullptr || species == 0) {
+      sStatus = "evolve: <party slot 1-6> <species number> are needed";
+      return;
+    }
+    struct { uint8_t kind, reserved; uint16_t parameter; } info = {0, 0, 0};
+    s32 r;
+    if (w.size() > 3 && w[3] == "field") {
+      r = PortXD_FieldEvolve(p, static_cast<s32>(Num(w, 4, 2)), static_cast<s32>(Num(w, 5, 0)));
+    } else if (w.size() > 3 && w[3] == "bag") {
+      fadeSet(3, 0.5f);
+      fadeCheck(1);
+      menuOffScreenSetDisp(0);
+      r = pokemonEvolutionAll(p, species, 0, &info, nullptr, 1, 0, 0);
+      menuOffScreenSetDisp(1);
+      fadeSet(2, 0.5f);
+      fadeCheck(1);
+    } else {
+      r = pokemonEvolutionAll(p, species, 0, &info, nullptr, 1, 0, 1);
+    }
+    sStatus = "evolve: the scene returned " + std::to_string(r);
+  } else if (k == "pc") {
+    menuPcBoxMain();
   } else if (k == "shop") {
     const int shop = w.size() > 1 ? std::atoi(w[1].c_str()) : -1;
     if (shop < 0 || shop > 20) {

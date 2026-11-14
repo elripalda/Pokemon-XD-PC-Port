@@ -28,12 +28,46 @@ struct AddedRowRef {
   bool operator==(const AddedRowRef& o) const { return mod == o.mod && table == o.table && name == o.name && id == o.id; }
 };
 
+struct SpeedSplit {
+  std::string id;
+  uint32_t rtaMs = 0, loadMs = 0;
+};
+struct SpeedBreak {
+  uint32_t atMs = 0;
+  uint32_t lengthMs = 0;
+  uint32_t epoch = 0;
+};
+struct Speedrun {
+  bool present = false;
+  bool on = false;
+  bool withoutLoads = false;
+  int start = 2, end = 2;
+  int category = 0;
+  std::vector<SpeedBreak> breaks;
+  bool breakPending = false;
+  uint32_t breakEpoch = 0, breakAtMs = 0;
+  std::vector<std::string> invalid;
+  uint32_t rtaMs = 0, loadMs = 0;
+  std::vector<SpeedSplit> splits;
+  bool finished = false;
+  uint32_t finalRtaMs = 0, finalLoadMs = 0;
+};
+
+struct PlayStats {
+  bool kept = false;
+  uint32_t battlesWon = 0, battlesLost = 0, battlesOther = 0;
+};
+
 struct Setup {
+  Speedrun speedrun;
+  PlayStats stats;
   Engine engine = Engine::Faithful;
   std::vector<AddedRowRef> addedRows;
   std::vector<ModUse> mods;
   std::string randomizer, randomizerVersion, seed;
   std::vector<std::string> challenges;
+  std::vector<std::string> options;
+  std::string split;
   std::string started;
   std::string portVersion;
   std::string chosenBy;
@@ -51,10 +85,11 @@ struct Setup {
   uint32_t trainerId = 0, secretId = 0;
 
   std::vector<const ModUse*> WorldMods() const;
-  bool Vanilla() const { return WorldMods().empty() && randomizer.empty() && challenges.empty(); }
+  bool Vanilla() const { return WorldMods().empty() && randomizer.empty() && challenges.empty() && options.empty(); }
 };
 
 std::string Label(const Setup& setup);
+std::string DisplayLabel(const Setup& setup);
 std::string UnknownLabel();
 
 std::string ToJson(const Setup& setup);

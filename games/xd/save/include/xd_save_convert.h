@@ -15,6 +15,8 @@ constexpr ByteOrder Other(ByteOrder o) { return o == ByteOrder::GameCube ? ByteO
 
 bool SwapSaveData(uint8_t* data, ByteOrder from, std::string* error);
 
+void SwapPokemonRecord(uint8_t* record);
+
 enum class SlotResult {
   Unwritten,
   Empty,

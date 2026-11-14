@@ -63,13 +63,13 @@ bool ExtractZip(const fs::path& zip, const fs::path& folder, std::string& error,
   std::error_code ec;
   const uint64_t size = fs::file_size(zip, ec);
   if (in.f == nullptr || ec || size < 22) {
-    error = "the package can't be read";
+    error = Tr("the package can't be read");
     return false;
   }
   const uint64_t tailSize = std::min<uint64_t>(size, 65557);
   std::vector<uint8_t> tail(static_cast<size_t>(tailSize));
   if (!in.Seek(size - tailSize) || !in.Read(tail.data(), tail.size())) {
-    error = "the package can't be read";
+    error = Tr("the package can't be read");
     return false;
   }
   size_t end = std::string::npos;
@@ -80,22 +80,22 @@ bool ExtractZip(const fs::path& zip, const fs::path& folder, std::string& error,
     }
   }
   if (end == std::string::npos) {
-    error = "the package isn't a zip file";
+    error = Tr("the package isn't a zip file");
     return false;
   }
   const uint16_t count = U16(&tail[end + 10]);
   const uint32_t dirSize = U32(&tail[end + 12]), dirOffset = U32(&tail[end + 16]);
   if (count == 0xFFFF || dirOffset == 0xFFFFFFFF || U16(&tail[end + 4]) != 0 || U16(&tail[end + 6]) != 0) {
-    error = "the package is a kind of zip this version can't unpack (ZIP64 or split)";
+    error = Tr("the package is a kind of zip this version can't unpack (ZIP64 or split)");
     return false;
   }
   if (static_cast<uint64_t>(dirOffset) + dirSize > size) {
-    error = "the package is damaged (its file list is outside it)";
+    error = Tr("the package is damaged (its file list is outside it)");
     return false;
   }
   std::vector<uint8_t> dir(dirSize);
   if (!in.Seek(dirOffset) || !in.Read(dir.data(), dir.size())) {
-    error = "the package can't be read";
+    error = Tr("the package can't be read");
     return false;
   }
   struct Entry {
@@ -110,7 +110,7 @@ bool ExtractZip(const fs::path& zip, const fs::path& folder, std::string& error,
   size_t p = 0;
   for (uint16_t i = 0; i < count; i++) {
     if (p + 46 > dir.size() || U32(&dir[p]) != 0x02014b50) {
-      error = "the package is damaged (its file list)";
+      error = Tr("the package is damaged (its file list)");
       return false;
     }
     Entry e{};
@@ -123,7 +123,7 @@ bool ExtractZip(const fs::path& zip, const fs::path& folder, std::string& error,
     const uint16_t nameLen = U16(&dir[p + 28]), extraLen = U16(&dir[p + 30]), commentLen = U16(&dir[p + 32]);
     e.offset = U32(&dir[p + 42]);
     if (p + 46 + nameLen + extraLen + commentLen > dir.size()) {
-      error = "the package is damaged (its file list)";
+      error = Tr("the package is damaged (its file list)");
       return false;
     }
     std::string raw(reinterpret_cast<const char*>(&dir[p + 46]), nameLen);
@@ -133,7 +133,7 @@ bool ExtractZip(const fs::path& zip, const fs::path& folder, std::string& error,
       raw.pop_back();
     }
     if (!SafeName(raw, e.name)) {
-      error = "the package holds a file name that isn't allowed: " + raw;
+      error = Fmt(Tr("the package holds a file name that isn't allowed: %s"), raw.c_str());
       return false;
     }
     if (e.name == "__MACOSX" || e.name.rfind("__MACOSX/", 0) == 0 || e.name == ".DS_Store" ||
@@ -141,12 +141,12 @@ bool ExtractZip(const fs::path& zip, const fs::path& folder, std::string& error,
       continue;
     }
     if ((e.flags & 1) != 0 || (e.method != 0 && e.method != 8) || e.packed == 0xFFFFFFFF || e.unpacked == 0xFFFFFFFF) {
-      error = "the package holds a file this version can't unpack: " + e.name;
+      error = Fmt(Tr("the package holds a file this version can't unpack: %s"), e.name.c_str());
       return false;
     }
     totalUnpacked += e.unpacked;
     if (totalUnpacked > 2 * kMaxPackageBytes) {
-      error = "the package is far too large when unpacked";
+      error = Tr("the package is far too large when unpacked");
       return false;
     }
     entries.push_back(std::move(e));
@@ -165,23 +165,23 @@ bool ExtractZip(const fs::path& zip, const fs::path& folder, std::string& error,
       continue;
     }
     if (detail::AncestorIsLink(folder, e.name)) {
-      error = "the package writes through a link: " + e.name;
+      error = Fmt(Tr("the package writes through a link: %s"), e.name.c_str());
       return false;
     }
     fs::create_directories(out.parent_path(), ec);
     uint8_t local[30];
     if (!in.Seek(e.offset) || !in.Read(local, sizeof local) || U32(local) != 0x04034b50) {
-      error = "the package is damaged (" + e.name + ")";
+      error = Fmt(Tr("the package is damaged (%s)"), e.name.c_str());
       return false;
     }
     const uint64_t data = static_cast<uint64_t>(e.offset) + 30 + U16(local + 26) + U16(local + 28);
     if (data + e.packed > size || !in.Seek(data)) {
-      error = "the package is damaged (" + e.name + ")";
+      error = Fmt(Tr("the package is damaged (%s)"), e.name.c_str());
       return false;
     }
     File target(out, L"wb");
     if (target.f == nullptr) {
-      error = "a file couldn't be written: " + Utf8(out);
+      error = Fmt(Tr("a file couldn't be written: %s"), Utf8(out).c_str());
       return false;
     }
     uLong crc = crc32(0L, Z_NULL, 0);
@@ -236,18 +236,18 @@ bool ExtractZip(const fs::path& zip, const fs::path& folder, std::string& error,
     }
     target.f = nullptr;
     if (!ok || written != e.unpacked || crc != e.crc) {
-      error = "the package is damaged: " + e.name + " doesn't unpack correctly";
+      error = Fmt(Tr("the package is damaged: %s doesn't unpack correctly"), e.name.c_str());
       return false;
     }
     if (detail::IsLinkMode(e.unixMode)) {
       const std::string text = detail::ReadSmallFile(out);
       fs::remove(out, ec);
       if (text.empty() || !detail::MakeUnpackedLink(folder, e.name, text, error)) {
-        error = error.empty() ? "the package holds an empty link: " + e.name : error;
+        error = error.empty() ? Fmt(Tr("the package holds an empty link: %s"), e.name.c_str()) : error;
         return false;
       }
     } else if (!detail::FinishUnpackedFile(out, e.unixMode)) {
-      error = "a file's permissions couldn't be set: " + e.name;
+      error = Fmt(Tr("a file's permissions couldn't be set: %s"), e.name.c_str());
       return false;
     }
   }
@@ -296,7 +296,7 @@ bool ReadPointer(const fs::path& root, std::string& current, std::string& previo
 
 bool WritePointer(const fs::path& root, const std::string& current, const std::string& previous, std::string& error) {
   if (!IsGameFolderName(current) || (!previous.empty() && !IsGameFolderName(previous))) {
-    error = "not a game folder name";
+    error = Tr("not a game folder name");
     return false;
   }
   const std::string text = "# Which game folder the starter opens. Written by the launcher's updater; delete this file\r\n"
@@ -322,7 +322,7 @@ bool WritePointer(const fs::path& root, const std::string& current, const std::s
   if (!moved) {
     std::error_code ec;
     fs::remove(fresh, ec);
-    error = "the choice of version couldn't be saved in " + Utf8(root);
+    error = Fmt(Tr("the choice of version couldn't be saved in %s"), Utf8(root).c_str());
     return false;
   }
   return true;
@@ -379,9 +379,31 @@ Layout FindLayout(const fs::path& programFolder, const std::string& starterName)
   const fs::path own = fs::weakly_canonical(programFolder, ec);
   l.running = Utf8(own.filename());
   l.root = own.parent_path();
-  if (!IsGameFolderName(l.running) || l.root.empty() || !fs::is_regular_file(l.root / PathOf(starterName), ec)) {
-    l.why = "Updates can only be installed in the player's folder (\"" + starterName + "\" with a \"" + kFirstFolder +
-            "\" folder next to it); this copy runs from " + Utf8(own) + ".";
+  size_t from = 0;
+  while (from <= starterName.size()) {
+    const size_t bar = starterName.find('|', from);
+    const std::string one = starterName.substr(from, bar == std::string::npos ? std::string::npos : bar - from);
+    if (!one.empty()) {
+      l.starterNames.push_back(one);
+    }
+    if (bar == std::string::npos) {
+      break;
+    }
+    from = bar + 1;
+  }
+  if (!l.root.empty()) {
+    for (const std::string& n : l.starterNames) {
+      if (fs::is_regular_file(l.root / PathOf(n), ec)) {
+        l.starter = n;
+        break;
+      }
+    }
+  }
+  if (!IsGameFolderName(l.running) || l.root.empty() || l.starter.empty()) {
+    l.why = Fmt(Tr("Updates can only be installed in the player's folder (\"%s\" with a \"%s\" folder next to it); this copy runs "
+                   "from %s."),
+                (l.starterNames.empty() ? starterName : l.starterNames.front()).c_str(), std::string(kFirstFolder).c_str(),
+                Utf8(own).c_str());
     l.running.clear();
     l.root.clear();
     return l;
@@ -403,15 +425,16 @@ bool Install(const InstallRequest& r, std::string& installed, std::string& error
   }
   std::error_code ec;
   if (HoldsPlayerData(l.root / PathOf(l.running))) {
-    error = "Your saves and settings are kept inside the game folder (" + l.running + "\\portable). An update would "
-            "start a new game folder without them, so it can't be installed this way: download the new version by "
-            "hand and move your portable folder over.";
+    error = Fmt(Tr("Your saves and settings are kept inside the game folder (%s\\portable). An update would start a new game "
+                   "folder without them, so it can't be installed this way: download the new version by hand and move your "
+                   "portable folder over."),
+                l.running.c_str());
     return false;
   }
   const uint64_t size = fs::file_size(r.package, ec);
   if (ec || size != m.size) {
-    error = "the downloaded package has the wrong size (" + std::to_string(ec ? 0 : size) + " bytes, the update "
-            "information says " + std::to_string(m.size) + ")";
+    error = Fmt(Tr("the downloaded package has the wrong size (%llu bytes, the update information says %llu)"),
+                static_cast<unsigned long long>(ec ? 0 : size), static_cast<unsigned long long>(m.size));
     return false;
   }
   std::string hash;
@@ -419,7 +442,7 @@ bool Install(const InstallRequest& r, std::string& installed, std::string& error
     return false;
   }
   if (hash != m.sha256) {
-    error = "the downloaded package is not the one the publisher signed (its SHA-256 differs)";
+    error = Tr("the downloaded package is not the one the publisher signed (its SHA-256 differs)");
     return false;
   }
   if (l.macApp) {
@@ -427,11 +450,11 @@ bool Install(const InstallRequest& r, std::string& installed, std::string& error
   }
   const std::string name = std::string(kFirstFolder) + "-" + m.version;
   if (!IsGameFolderName(name)) {
-    error = "the version isn't usable as a folder name: " + m.version;
+    error = Fmt(Tr("the version isn't usable as a folder name: %s"), m.version.c_str());
     return false;
   }
   if (name == l.running) {
-    error = "this version is the one running now";
+    error = Tr("this version is the one running now");
     return false;
   }
   const fs::path partial = l.root / PathOf(name + ".partial");
@@ -442,7 +465,7 @@ bool Install(const InstallRequest& r, std::string& installed, std::string& error
     return false;
   };
   if (!RemoveFolder(partial)) {
-    error = "an earlier unfinished update couldn't be removed: " + Utf8(partial);
+    error = Fmt(Tr("an earlier unfinished update couldn't be removed: %s"), Utf8(partial).c_str());
     return false;
   }
   std::string why;
@@ -455,17 +478,18 @@ bool Install(const InstallRequest& r, std::string& installed, std::string& error
     return fail(why);
   }
   if (!FolderUsable(partial, required)) {
-    return fail("the package is incomplete (it should hold the launcher, the game and " + std::string(kVersionFile) + ")");
+    return fail(Fmt(Tr("the package is incomplete (it should hold the launcher, the game and %s)"), kVersionFile));
   }
+  detail::RestoreExecutableBits(partial);
   if (FolderVersion(partial) != m.version) {
-    return fail("the package holds version " + FolderVersion(partial) + ", not " + m.version);
+    return fail(Fmt(Tr("the package holds version %s, not %s"), FolderVersion(partial).c_str(), m.version.c_str()));
   }
   if (fs::exists(target, ec) && !RemoveFolder(target)) {
-    return fail("the folder " + Utf8(target) + " is in use and couldn't be replaced; close the programs using it");
+    return fail(Fmt(Tr("the folder %s is in use and couldn't be replaced; close the programs using it"), Utf8(target).c_str()));
   }
   fs::rename(partial, target, ec);
   if (ec) {
-    return fail("the new version's folder couldn't be put in place: " + ec.message());
+    return fail(Fmt(Tr("the new version's folder couldn't be put in place: %s"), ec.message().c_str()));
   }
   if (!WritePointer(l.root, name, l.running, why)) {
     RemoveFolder(target);
@@ -473,6 +497,16 @@ bool Install(const InstallRequest& r, std::string& installed, std::string& error
     return false;
   }
   installed = name;
+  if (!l.starter.empty()) {
+    for (const std::string& n : l.starterNames) {
+      if (n == l.starter) {
+        break;
+      }
+      if (!fs::exists(l.root / PathOf(n), ec)) {
+        fs::copy_file(l.root / PathOf(l.starter), l.root / PathOf(n), fs::copy_options::skip_existing, ec);
+      }
+    }
+  }
   for (const auto& e : fs::directory_iterator(l.root, ec)) {
     const std::string n = Utf8(e.path().filename());
     const bool leftover = n.size() > 8 && n.substr(n.size() - 8) == ".partial" && IsGameFolderName(n.substr(0, n.size() - 8));
@@ -494,7 +528,7 @@ bool GoBack(const Layout& l, const std::vector<std::string>& requiredFiles, std:
     return detail::GoBackMac(l, requiredFiles, error);
   }
   if (l.previous.empty() || !FolderUsable(l.root / PathOf(l.previous), requiredFiles)) {
-    error = "there is no previous version to go back to";
+    error = Tr("there is no previous version to go back to");
     return false;
   }
   return WritePointer(l.root, l.previous, l.current, error);

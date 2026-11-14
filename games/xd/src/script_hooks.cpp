@@ -1,3 +1,4 @@
+#include "i18n.h"
 #include "xd_gen4_abilities.h"
 #include "xd_scripts.h"
 
@@ -17,11 +18,16 @@ uint16_t pokemon_GetMaxHp(void* poke);
 uint8_t pokemonBiosGetLevel(void* poke);
 uint16_t fightFloor_GetTurnCount(void* floor);
 uint16_t fightGetFightResultId(void);
+void PortXD_OnlineTurnActions(void);
+void PortXD_OnlineTurnEnd(void);
+void PortXD_OnlineBattleEnd(uint32_t result);
 uint8_t fightFloorIsGcHeroWin(void* floor, uint16_t result);
 void PortVideo_Notice(const char* text, double seconds);
 }
 
 namespace {
+
+using engine::i18n::Tr;
 
 std::unique_ptr<engine::script::Host> sHost;
 std::string sActiveText;
@@ -48,8 +54,9 @@ engine::script::Value Battler(void* fop) {
 
 void ReportFailures() {
   for (const engine::script::Failure& f : sHost->TakeFailures()) {
-    const std::string text = "Script mod " + f.modId + " switched off: " + f.message;
-    PortVideo_Notice(text.substr(0, 150).c_str(), 10.0);
+    char text[512];
+    std::snprintf(text, sizeof text, Tr("Script mod %s switched off: %s"), f.modId.c_str(), f.message.c_str());
+    PortVideo_Notice(std::string(text).substr(0, 150).c_str(), 10.0);
   }
 }
 
@@ -209,6 +216,7 @@ static void NotifyTurn(const char* hook, int64_t turn) {
 }
 
 uint32_t PortXD_FlowDoFightAction(void* action) {
+  PortXD_OnlineTurnActions();
   if (sHost && sHost->HasHandlers(kHookTurnStart)) {
     const int turn = fightFloor_GetTurnCount(nullptr);
     if (turn != sLastTurnStart) {
@@ -223,6 +231,7 @@ uint32_t PortXD_FlowOneTurnPost(void* action) {
   const bool listening = sHost && sHost->HasHandlers(kHookTurnEnd);
   const bool over = listening && fightGetFightResultId() != 0;
   const uint32_t r = fightActionFlowOneTurnPost(action);
+  PortXD_OnlineTurnEnd();
   if (listening && !over) {
     NotifyTurn(kHookTurnEnd, fightFloor_GetTurnCount(nullptr));
   }
@@ -234,7 +243,9 @@ uint32_t PortXD_FlowSyuuryou(void* action) {
   const uint16_t result = listening ? fightGetFightResultId() : 0;
   const int won = listening && fightFloorIsGcHeroWin(nullptr, result) ? 1 : 0;
   const int turn = listening ? fightFloor_GetTurnCount(nullptr) : 0;
+  const uint16_t onlineResult = fightGetFightResultId();
   const uint32_t r = fightActionFlowSyuuryou(action);
+  PortXD_OnlineBattleEnd(onlineResult);
   sLastTurnStart = -1;
   if (listening) {
     using engine::script::Value;

@@ -1,35 +1,3 @@
-namespace ot {
-
-const uint8_t kWhite[4] = {0xF0, 0xF0, 0xF0, 0xFF};
-const uint8_t kGrey[4] = {0x88, 0x88, 0x88, 0xFF};
-const uint8_t kGold[4] = {0xFF, 0xE0, 0x70, 0xFF};
-const uint8_t kGreen[4] = {0x90, 0xE8, 0x90, 0xFF};
-
-void Say(ImDrawList* dl, const Screen& sc, float x, float y, const std::string& t, const uint8_t* col, float scale = 0.8f,
-         float maxW = 0.f) {
-  float squeeze = 1.f;
-  if (maxW > 0.f) {
-    const float tw = static_cast<float>(TextWidth(t.c_str())) * scale;
-    if (tw > maxW) squeeze = maxW / tw;
-  }
-  DrawText(dl, sc, x, y, t.c_str(), col, squeeze, scale);
-}
-
-void Panel(ImDrawList* dl, const Screen& sc, float x0, float y0, float x1, float y1, bool bright = false) {
-  dl->AddRectFilled(sc.At(x0, y0), sc.At(x1, y1), IM_COL32(18, 22, 40, 235), 8.f * sc.s);
-  dl->AddRect(sc.At(x0, y0), sc.At(x1, y1), bright ? IM_COL32(255, 224, 112, 255) : IM_COL32(120, 140, 200, 255), 8.f * sc.s, 0,
-              1.5f * sc.s);
-}
-
-void Wrapped(ImDrawList* dl, const Screen& sc, float x, float y, float w, const std::string& text, const uint8_t* col,
-             float scale, float pitch, int maxLines) {
-  const std::vector<std::string> lines = Wrap(text, w / scale);
-  for (int i = 0; i < static_cast<int>(lines.size()) && i < maxLines; i++)
-    Say(dl, sc, x, y + pitch * static_cast<float>(i), lines[static_cast<size_t>(i)], col, scale);
-}
-
-}
-
 namespace sp {
 
 struct Thumb {
@@ -81,6 +49,7 @@ bool Open() {
 
 void Close(void*) {
   if (D.answer >= 0 && D.answer < static_cast<int>(D.rows.size())) {
+    ls::CoverContinue("the save picker's choice");
     xd::pt::PickerAnswer(&D.rows[static_cast<size_t>(D.answer)]);
   } else {
     xd::pt::PickerAnswer(nullptr);
@@ -88,7 +57,7 @@ void Close(void*) {
 }
 
 constexpr int kShown = 3;
-constexpr float kRowH = 90.f;
+constexpr float kRowH = 84.f;
 
 bool Frame(void*, const PortMenuInput* in) {
   const int n = static_cast<int>(D.rows.size());
@@ -110,39 +79,34 @@ bool Frame(void*, const PortMenuInput* in) {
 
   const Screen sc = ScreenNow();
   ImDrawList* dl = ImGui::GetForegroundDrawList();
-  FillWindow(dl, IM_COL32(8, 10, 28, 245));
-  ot::Panel(dl, sc, 40.f, 20.f, 600.f, 66.f);
-  ot::Say(dl, sc, 62.f, 30.f, "CONTINUE: choose a save", ot::kGold, 1.f);
-  ot::Panel(dl, sc, 40.f, 74.f, 600.f, 74.f + kRowH * kShown + 8.f);
+  kit::Backdrop(dl, sc);
+  kit::Header(dl, sc, Tr("CONTINUE: choose a save"));
+  kit::Window(dl, sc, 40.f, 72.f, 600.f, 72.f + kRowH * kShown + 12.f);
   for (int r = 0; r < kShown && D.first + r < n; r++) {
     const int i = D.first + r;
     const xd::picker::Row& row = D.rows[static_cast<size_t>(i)];
-    const float y = 80.f + kRowH * static_cast<float>(r);
+    const float y = 78.f + kRowH * static_cast<float>(r);
     const bool sel = i == D.cursor;
-    if (sel) dl->AddRectFilled(sc.At(48.f, y), sc.At(592.f, y + kRowH - 4.f), IM_COL32(70, 80, 140, 255), 4.f * sc.s);
-    const float bx = 56.f, by = y + 4.f, bw = 104.f, bh = 78.f;
-    dl->AddRectFilled(sc.At(bx, by), sc.At(bx + bw, by + bh), IM_COL32(0, 0, 0, 255));
+    if (sel) kit::RowSel(dl, sc, 46.f, 594.f, y, kRowH - 2.f, false);
     const Thumb& t = D.thumbs[static_cast<size_t>(i)];
-    if (t.ok) {
-      const float k = std::min(bw / t.w, bh / t.h), w = t.w * k, h = t.h * k;
-      dl->AddImage(t.id, sc.At(bx + (bw - w) / 2.f, by + (bh - h) / 2.f), sc.At(bx + (bw + w) / 2.f, by + (bh + h) / 2.f));
-    } else {
-      ot::Say(dl, sc, bx + 8.f, by + 28.f, "no picture yet", ot::kGrey, 0.6f, bw - 12.f);
-    }
-    dl->AddRect(sc.At(bx, by), sc.At(bx + bw, by + bh), IM_COL32(120, 140, 200, 255));
-    ot::Say(dl, sc, 176.f, y + 8.f, row.trainer, sel ? ot::kGold : ot::kWhite, 0.95f, 300.f);
-    ot::Say(dl, sc, 176.f, y + 36.f, row.name + (row.active ? "  (loaded now)" : ""), ot::kGrey, 0.75f, 300.f);
-    ot::Say(dl, sc, 176.f, y + 56.f, row.playTime + " played", ot::kWhite, 0.75f, 300.f);
-    ot::Say(dl, sc, 440.f, y + 8.f, row.rules.substr(0, row.rules.find(',')), ot::kGreen, 0.7f, 140.f);
+    kit::PictureBox(dl, sc, 62.f, y + 5.f, 96.f, 72.f, t.ok ? t.id : ImTextureID{}, t.w, t.h, Tr("no picture yet"), sel);
+    if (sel) kit::Cursor(dl, sc, 182.f, y + 22.f);
+    kit::Text(dl, sc, 198.f, y + 11.f, row.trainer, sel ? kit::kText : kit::kSoft, 0.95f, 230.f, 1);
+    char played[96];
+    std::snprintf(played, sizeof played, Tr("%s played"), row.playTime.c_str());
+    kit::Text(dl, sc, 198.f, y + 40.f, row.name + (row.active ? std::string("  ") + Tr("(loaded now)") : std::string()), kit::kGold, 0.75f, 380.f);
+    kit::Text(dl, sc, 198.f, y + 60.f, played, kit::kSoft, 0.72f, 230.f);
+    const std::string engine = row.rules.substr(0, row.rules.find(','));
+    const float cw = kit::Width(engine, 0.62f) + 18.f;
+    kit::Chip(dl, sc, 584.f - cw, y + 12.f, engine, true);
   }
-  if (D.first > 0) DrawTriangle(dl, sc, 320.f, 69.f, 12.f, 0, IM_COL32(0xF0, 0xF0, 0xF0, 0xE0));
-  if (D.first + kShown < n) DrawTriangle(dl, sc, 320.f, 74.f + kRowH * kShown + 8.f, 12.f, 1, IM_COL32(0xF0, 0xF0, 0xF0, 0xE0));
-  const float ry = 74.f + kRowH * kShown + 18.f;
-  ot::Panel(dl, sc, 40.f, ry, 600.f, 436.f);
-  ot::Say(dl, sc, 56.f, ry + 6.f, "Rules of this save", ot::kGold, 0.8f);
-  ot::Wrapped(dl, sc, 56.f, ry + 28.f, 530.f, D.rows[static_cast<size_t>(D.cursor)].rules, ot::kWhite, 0.7f, 17.f, 4);
-  ot::Say(dl, sc, 48.f, 446.f, "A: load this save   B: back to the title menu", ot::kGrey, 0.75f);
-  if (D.age < 0.2f) FillWindow(dl, IM_COL32(0, 0, 0, std::clamp(static_cast<int>(255.f * (1.f - D.age / 0.2f)), 0, 255)));
+  if (D.first > 0) kit::Arrow(dl, sc, 320.f, 70.f, true);
+  if (D.first + kShown < n) kit::Arrow(dl, sc, 320.f, 72.f + kRowH * kShown + 12.f, false);
+  const float ry = 72.f + kRowH * kShown + 18.f;
+  kit::TitledWindow(dl, sc, 40.f, ry, 600.f, 438.f, Tr("Rules of this save"));
+  kit::Para(dl, sc, 66.f, ry + 40.f, 508.f, D.rows[static_cast<size_t>(D.cursor)].rules, kit::kText, 0.68f, 16.f, 3);
+  kit::HintBar(dl, sc, Tr("A: load this save   B: back to the title menu"));
+  kit::FadeIn(dl, D.age);
   return true;
 }
 

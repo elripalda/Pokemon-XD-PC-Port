@@ -153,7 +153,12 @@ struct ModFolder {
   Manifest manifest;
   std::filesystem::path folder;
   std::string folderName;
+  bool texturePack = false;
+  bool looseFiles = false;
 };
+
+void SetTexturePackSource(const std::filesystem::path& root, std::string_view gameId);
+std::vector<ModFolder> FindTexturePacks();
 
 std::vector<ModFolder> FindMods(const std::filesystem::path& modsFolder, std::vector<Message>& messages);
 struct BrokenFolder {

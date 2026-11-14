@@ -19,10 +19,10 @@ struct Picture {
 Picture Shrink(const uint8_t* rgba, uint32_t w, uint32_t h);
 
 std::vector<uint8_t> EncodePng(const Picture& picture);
-bool DecodePng(const std::vector<uint8_t>& bytes, Picture& out, std::string& error);
+bool DecodePng(const std::vector<uint8_t>& bytes, Picture& out, std::string& error, bool keepAlpha = false);
 
 bool WriteFile(const std::filesystem::path& file, const Picture& picture, std::string& error);
-bool ReadFile(const std::filesystem::path& file, Picture& out, std::string& error);
+bool ReadFile(const std::filesystem::path& file, Picture& out, std::string& error, bool keepAlpha = false);
 
 }
 

@@ -48,7 +48,7 @@ bool PortShot_SavePng(const wchar_t* path, const uint8_t* rgba, uint32_t w, uint
   return ok;
 }
 
-void PortShot_GamePicture(PortShotRgbaDone done, void* ctx) {
+[[maybe_unused]] static void WindowPictureRgba(PortShotRgbaDone done, void* ctx) {
   HWND hwnd = static_cast<HWND>(SDL_GetPointerProperty(SDL_GetWindowProperties(aurora_get_window()),
                                                         SDL_PROP_WINDOW_WIN32_HWND_POINTER, nullptr));
   RECT rect;

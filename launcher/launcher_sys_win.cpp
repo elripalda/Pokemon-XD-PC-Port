@@ -1,5 +1,7 @@
 #include "launcher_sys.h"
 
+#include "i18n.h"
+
 #define WIN32_LEAN_AND_MEAN
 #define NOMINMAX
 #include <windows.h>
@@ -8,6 +10,8 @@
 #include <shlobj.h>
 #include <shobjidl.h>
 
+#include <cstdarg>
+#include <cstdio>
 #include <cstdint>
 #include <cwchar>
 
@@ -17,7 +21,18 @@ namespace fs = std::filesystem;
 
 namespace {
 
+using engine::i18n::Tr;
+
 HRESULT sCom = E_FAIL;
+
+std::string Fmt(const char* format, ...) {
+  char buf[2048];
+  va_list args;
+  va_start(args, format);
+  std::vsnprintf(buf, sizeof(buf), format, args);
+  va_end(args);
+  return buf;
+}
 
 std::string Utf8(const fs::path& p) {
   const std::u8string u8 = p.u8string();
@@ -108,7 +123,7 @@ Process* StartProgram(const StartRequest& request, std::string& error) {
     outFile = CreateFileW(request.outputFile.wstring().c_str(), GENERIC_WRITE, FILE_SHARE_READ | FILE_SHARE_WRITE, &sa,
                           CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
     if (outFile == INVALID_HANDLE_VALUE) {
-      error = "Windows error " + std::to_string(GetLastError()) + " (its output file)";
+      error = Fmt(Tr("Windows error %d (its output file)"), static_cast<int>(GetLastError()));
       return nullptr;
     }
     si.dwFlags = STARTF_USESTDHANDLES;
@@ -168,7 +183,7 @@ Process* StartProgram(const StartRequest& request, std::string& error) {
   }
   if (!started) {
     if (job != nullptr) CloseHandle(job);
-    error = "Windows error " + std::to_string(startError);
+    error = Fmt(Tr("Windows error %d"), static_cast<int>(startError));
     return nullptr;
   }
   if (job != nullptr) {
@@ -252,7 +267,7 @@ bool ToRecycleBin(const fs::path& folder, std::string& error) {
   op.fFlags = FOF_ALLOWUNDO | FOF_NOCONFIRMATION | FOF_SILENT | FOF_NOERRORUI | FOF_WANTNUKEWARNING;
   const int result = SHFileOperationW(&op);
   if (result != 0 || op.fAnyOperationsAborted || fs::exists(folder, ec)) {
-    error = "Windows couldn't move it to the recycle bin (" + std::to_string(result) + "): " + Utf8(folder);
+    error = Fmt(Tr("Windows couldn't move it to the recycle bin (%d): %s"), result, Utf8(folder).c_str());
     return false;
   }
   return true;
@@ -289,13 +304,14 @@ bool MakeShortcut(const fs::path& folder, const std::string& name, const std::st
   if (FAILED(hr)) {
     char code[16];
     std::snprintf(code, sizeof code, "0x%08lX", static_cast<unsigned long>(hr));
-    message = "Windows didn't let the launcher put a shortcut in " + Utf8(folder) + " (error " + code +
-              "). If that folder is kept in OneDrive or protected by Windows Security, make the shortcut by hand: "
-              "right-click " + Utf8(target.filename()) + ", \"Show more options\", \"Create shortcut\".";
+    message = Fmt(Tr("Windows didn't let the launcher put a shortcut in %s (error %s). If that folder is kept in OneDrive "
+                     "or protected by Windows Security, make the shortcut by hand: right-click %s, \"Show more options\", "
+                     "\"Create shortcut\"."),
+                  Utf8(folder).c_str(), code, Utf8(target.filename()).c_str());
     return false;
   }
   SHChangeNotify(SHCNE_CREATE, SHCNF_PATHW | SHCNF_FLUSHNOWAIT, link.c_str(), nullptr);
-  message = "Shortcut made: " + Utf8(link);
+  message = Fmt(Tr("Shortcut made: %s"), Utf8(link).c_str());
   return true;
 }
 

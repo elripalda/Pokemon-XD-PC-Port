@@ -31,6 +31,7 @@ struct ExtraEvolution {
 void SetExtraEvolutions(const std::vector<ExtraEvolution>& list, int32_t linkingCord);
 
 void SetEeveeChoices(bool on, uint32_t leafSpecies, uint32_t leafItem, uint32_t iceSpecies, uint32_t iceItem);
+bool EeveeOfferSpecies(uint32_t& leaf, uint32_t& ice);
 
 }
 

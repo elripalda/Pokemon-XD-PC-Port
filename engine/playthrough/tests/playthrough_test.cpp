@@ -106,6 +106,27 @@ int main(int argc, char** argv) {
     run.battlesWon = {216, 375, 393};
     check(ep::FromJson(ep::ToJson(run), again, error) && again.battlesWonKept && again.battlesWon == run.battlesWon,
           "battles won: round trip");
+    ep::Setup timed;
+    check(ep::ToJson(timed).find("speedrun") == std::string::npos && ep::ToJson(timed).find("stats") == std::string::npos,
+          "no timer, no stats: nothing written");
+    timed.speedrun.present = timed.speedrun.on = true;
+    timed.speedrun.withoutLoads = true;
+    timed.speedrun.rtaMs = 4000123;
+    timed.speedrun.loadMs = 90500;
+    timed.speedrun.splits = {{"kidnapper", 600000, 20000}, {"elder", 1200500, 41000}};
+    timed.stats = {true, 12, 3, 1};
+    ep::Setup back;
+    check(ep::FromJson(ep::ToJson(timed), back, error) && back.speedrun.on && back.speedrun.withoutLoads &&
+              back.speedrun.rtaMs == 4000123 && back.speedrun.loadMs == 90500 && back.speedrun.splits.size() == 2 &&
+              back.speedrun.splits[1].id == "elder" && back.speedrun.splits[1].rtaMs == 1200500 && !back.speedrun.finished &&
+              back.stats.kept && back.stats.battlesWon == 12 && back.stats.battlesLost == 3 && back.stats.battlesOther == 1,
+          "speedrun timer and stats: round trip");
+    timed.speedrun.finished = true;
+    timed.speedrun.finalRtaMs = 9000000;
+    check(ep::FromJson(ep::ToJson(timed), back, error) && back.speedrun.finished && back.speedrun.finalRtaMs == 9000000,
+          "speedrun timer: finished round trip");
+    check(timed.PureFaithful() && timed.Vanilla() && ep::Label(timed) == ep::Label(ep::Setup{}),
+          "the timer does not change Faithful / Vanilla or the label");
   }
   {
     ep::Setup old;

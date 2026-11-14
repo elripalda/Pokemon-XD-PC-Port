@@ -82,16 +82,17 @@ Layout FindMacLayout(const fs::path& programFolder) {
   l.running = "app";
   const std::string where = Utf8(l.appPath);
   if (where.find("/AppTranslocation/") != std::string::npos || where.rfind("/Volumes/", 0) == 0) {
-    l.why = "This copy runs from a disk image or from a temporary place the Mac made for it (" + where +
-            "). Drag Pokemon XD to your Applications folder (or any folder of yours), open it from there, and "
-            "updates can be installed.";
+    l.why = Fmt(Tr("This copy runs from a disk image or from a temporary place the Mac made for it (%s). Drag Pokemon XD to your "
+                   "Applications folder (or any folder of yours), open it from there, and updates can be installed."),
+                where.c_str());
     l.root.clear();
     return l;
   }
 #if !defined(_WIN32)
   if (::access(l.root.c_str(), W_OK | X_OK) != 0) {
-    l.why = "Pokemon XD is in a folder this account can't write to (" + Utf8(l.root) + "), so an update can't be put in "
-            "place. Move the app into a folder of yours (or install the new version by hand).";
+    l.why = Fmt(Tr("Pokemon XD is in a folder this account can't write to (%s), so an update can't be put in place. Move the app "
+                   "into a folder of yours (or install the new version by hand)."),
+                Utf8(l.root).c_str());
     l.root.clear();
     return l;
   }
@@ -133,7 +134,7 @@ bool InstallMacApp(const InstallRequest& r, std::string& installed, std::string&
     return false;
   };
   if (!RemoveFolder(partial)) {
-    error = "an earlier unfinished update couldn't be removed: " + Utf8(partial);
+    error = Fmt(Tr("an earlier unfinished update couldn't be removed: %s"), Utf8(partial).c_str());
     return false;
   }
   fs::create_directories(state, ec);
@@ -167,7 +168,7 @@ bool InstallMacApp(const InstallRequest& r, std::string& installed, std::string&
       found = e.path();
       apps++;
     } else if (!wholeDownload) {
-      return fail("the package holds something besides the app: " + Utf8(e.path().filename()));
+      return fail(Fmt(Tr("the package holds something besides the app: %s"), Utf8(e.path().filename()).c_str()));
     }
   }
   if (apps != 1) {
@@ -176,9 +177,10 @@ bool InstallMacApp(const InstallRequest& r, std::string& installed, std::string&
   if (!AppUsable(found, r.requiredFiles)) {
     return fail("the package is incomplete (the app should hold the launcher and the game)");
   }
+  RestoreExecutableBits(found);
   const std::string version = FolderVersion(found / "Contents" / "MacOS");
   if (version != r.manifest.version) {
-    return fail("the package holds version " + version + ", not " + r.manifest.version);
+    return fail(Fmt(Tr("the package holds version %s, not %s"), version.c_str(), r.manifest.version.c_str()));
   }
   if (!RemoveFolder(pending)) {
     return fail("an earlier waiting update couldn't be removed");
@@ -187,7 +189,7 @@ bool InstallMacApp(const InstallRequest& r, std::string& installed, std::string&
   fs::rename(found, pending / name, ec);
   if (ec) {
     RemoveFolder(pending);
-    return fail("the new app couldn't be put in its waiting place: " + ec.message());
+    return fail(Fmt(Tr("the new app couldn't be put in its waiting place: %s"), ec.message().c_str()));
   }
   RemoveFolder(partial);
   installed = "pending";
@@ -199,22 +201,22 @@ bool GoBackMac(const Layout& l, const std::vector<std::string>& requiredFiles, s
   const fs::path state = l.root / kStateName;
   if (l.current == "pending") {
     if (!RemoveFolder(state / "pending")) {
-      error = "the waiting update couldn't be removed";
+      error = Tr("the waiting update couldn't be removed");
       return false;
     }
     return true;
   }
   if (l.previous != "previous" || !FolderUsable(MacProgramFolder(l, "previous"), requiredFiles)) {
-    error = "there is no previous version to go back to";
+    error = Tr("there is no previous version to go back to");
     return false;
   }
   if (!RemoveFolder(state / "pending")) {
-    error = "the waiting update couldn't be removed";
+    error = Tr("the waiting update couldn't be removed");
     return false;
   }
   fs::rename(state / "previous", state / "pending", ec);
   if (ec) {
-    error = "the previous version couldn't be made ready: " + ec.message();
+    error = Fmt(Tr("the previous version couldn't be made ready: %s"), ec.message().c_str());
     return false;
   }
   return true;
@@ -243,16 +245,16 @@ bool MacApplyPending(const Layout& l, std::string& error) {
   if (std::FILE* f = std::fopen(script.c_str(), "wb")) {
     const bool ok = std::fwrite(text.data(), 1, text.size(), f) == text.size();
     if (std::fclose(f) != 0 || !ok) {
-      error = "the update helper couldn't be written";
+      error = Tr("the update helper couldn't be written");
       return false;
     }
   } else {
-    error = "the update helper couldn't be written";
+    error = Tr("the update helper couldn't be written");
     return false;
   }
   const pid_t child = ::fork();
   if (child < 0) {
-    error = "the update helper couldn't be started";
+    error = Tr("the update helper couldn't be started");
     return false;
   }
   if (child == 0) {

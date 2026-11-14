@@ -1,3 +1,4 @@
+#include "i18n.h"
 #include <port_photo.h>
 #include <port_freeze.h>
 #include <port_menu_music.h>
@@ -31,6 +32,7 @@
 
 #include <algorithm>
 #include <atomic>
+#include <cstdarg>
 #include <cmath>
 #include <cstdint>
 #include <cstdio>
@@ -49,6 +51,18 @@ void PortInput_PhotoNote(const char* what);
 namespace {
 
 namespace fs = std::filesystem;
+using engine::i18n::Tr;
+std::string Fmt(const char* format, ...) {
+  va_list args, again;
+  va_start(args, format);
+  va_copy(again, args);
+  const int n = std::vsnprintf(nullptr, 0, format, args);
+  va_end(args);
+  std::string out(static_cast<size_t>(n > 0 ? n : 0), '\0');
+  if (n > 0) std::vsnprintf(out.data(), out.size() + 1, format, again);
+  va_end(again);
+  return out;
+}
 constexpr float kPi = 3.14159265f;
 constexpr float kDeg = kPi / 180.f;
 
@@ -250,7 +264,7 @@ void CollectShot() {
   AuroraReadbackGet(sStream, &dest, 1);
   if (!dest.found) {
     if (--sShotWait <= 0) {
-      sStatus = "The picture never came back from the graphics card.";
+      sStatus = Tr("The picture never came back from the graphics card.");
       std::fprintf(stderr, "[photo] %s\n", sStatus.c_str());
       EndShot();
     }
@@ -260,10 +274,10 @@ void CollectShot() {
   const fs::path path = NextPhotoPath();
   if (SavePng(path, pixels.data(), sShotW, sShotH)) {
     sPhotosTaken++;
-    sStatus = "Saved " + U8(path.filename()) + " (" + std::to_string(sShotW) + "x" + std::to_string(sShotH) + ")";
+    sStatus = Fmt(Tr("Saved %s (%dx%d)"), U8(path.filename()).c_str(), static_cast<int>(sShotW), static_cast<int>(sShotH));
     std::fprintf(stderr, "[photo] saved %s (%ux%u)\n", U8(path).c_str(), sShotW, sShotH);
   } else {
-    sStatus = "Could not save " + U8(path);
+    sStatus = Fmt(Tr("Could not save %s"), U8(path).c_str());
     std::fprintf(stderr, "[photo] could not save %s\n", U8(path).c_str());
   }
   EndShot();
@@ -321,7 +335,7 @@ void DrawFrame(bool gameCamera) {
       sShot = Shot::Wait;
       sShotWait = 120;
     } else {
-      sStatus = "The picture could not be taken (no readback on this graphics card?).";
+      sStatus = Tr("The picture could not be taken (no readback on this graphics card?).");
       std::fprintf(stderr, "[photo] %s\n", sStatus.c_str());
       EndShot();
     }
@@ -335,50 +349,51 @@ void DrawOverlay() {
   if (!sOverlay || ImGui::GetCurrentContext() == nullptr) return;
   ImGui::SetNextWindowPos(ImVec2(16, 16), ImGuiCond_FirstUseEver);
   ImGui::SetNextWindowBgAlpha(0.8f);
-  const std::string title = "Photo mode (" + sKeyName + ": back to the game)";
+  const std::string title = Fmt(Tr("Photo mode (%s: back to the game)"), sKeyName.c_str());
   if (!ImGui::Begin(title.c_str(), nullptr, ImGuiWindowFlags_AlwaysAutoResize)) {
     ImGui::End();
     return;
   }
-  ImGui::TextUnformatted("The game is paused.");
-  ImGui::TextDisabled("Move: W A S D, up/down: E Q (Shift faster, Ctrl slower)");
-  ImGui::TextDisabled("Look: hold the right mouse button; wheel: speed; tilt: Z C");
-  ImGui::TextDisabled("Controller: sticks, triggers up/down, shoulders tilt");
-  ImGui::TextDisabled("P: photo   R: reset   H: hide this window");
+  ImGui::TextUnformatted(Tr("The game is paused."));
+  ImGui::TextDisabled("%s", Tr("Move: W A S D, up/down: E Q (Shift faster, Ctrl slower)"));
+  ImGui::TextDisabled("%s", Tr("Look: hold the right mouse button; wheel: speed; tilt: Z C"));
+  ImGui::TextDisabled("%s", Tr("Controller: sticks, triggers up/down, shoulders tilt"));
+  ImGui::TextDisabled("%s", Tr("P: photo   R: reset   H: hide this window"));
   ImGui::Separator();
-  ImGui::SliderFloat("Speed", &sSpeed, 1.f, 20000.f, "%.0f", ImGuiSliderFlags_Logarithmic);
+  ImGui::SliderFloat(Tr("Speed"), &sSpeed, 1.f, 20000.f, "%.0f", ImGuiSliderFlags_Logarithmic);
   const float gameFov = AuroraGetViewOverrideFovY();
   float fov = sCam.fov > 0.f ? sCam.fov : gameFov;
-  if (ImGui::SliderFloat("Field of view", &fov, 5.f, 120.f, "%.0f degrees")) {
+  if (ImGui::SliderFloat(Tr("Field of view"), &fov, 5.f, 120.f, Tr("%.0f degrees"))) {
     sCam.fov = fov;
   }
-  ImGui::SliderFloat("Tilt", &sCam.roll, -180.f, 180.f, "%.0f degrees");
-  ImGui::Checkbox("Hide menus and text (2D)", &sHide2D);
+  ImGui::SliderFloat(Tr("Tilt"), &sCam.roll, -180.f, 180.f, Tr("%.0f degrees"));
+  ImGui::Checkbox(Tr("Hide menus and text (2D)"), &sHide2D);
   static const struct {
     int scale;
     const char* name;
   } kScales[] = {{0, "As the game draws"}, {1, "640x480"}, {2, "1280x960 (2x)"}, {3, "1920x1440 (3x)"},
                  {4, "2560x1920 (4x)"},   {6, "3840x2880 (6x)"}, {8, "5120x3840 (8x)"}};
-  const char* current = kScales[0].name;
+  const auto scaleName = [](const auto& s) { return s.scale == 0 ? Tr("As the game draws") : s.name; };
+  const char* current = scaleName(kScales[0]);
   for (const auto& s : kScales) {
-    if (s.scale == sShotScale) current = s.name;
+    if (s.scale == sShotScale) current = scaleName(s);
   }
-  if (ImGui::BeginCombo("Photo size", current)) {
+  if (ImGui::BeginCombo(Tr("Photo size"), current)) {
     for (const auto& s : kScales) {
-      if (ImGui::Selectable(s.name, s.scale == sShotScale)) sShotScale = s.scale;
+      if (ImGui::Selectable(scaleName(s), s.scale == sShotScale)) sShotScale = s.scale;
     }
     ImGui::EndCombo();
   }
   ImGui::Separator();
   ImGui::BeginDisabled(sShot != Shot::None);
-  if (ImGui::Button("Take photo")) sWantShot = true;
+  if (ImGui::Button(Tr("Take photo"))) sWantShot = true;
   ImGui::EndDisabled();
   ImGui::SameLine();
-  if (ImGui::Button("Reset camera")) sWantReset = true;
+  if (ImGui::Button(Tr("Reset camera"))) sWantReset = true;
   ImGui::SameLine();
-  if (ImGui::Button("Back to the game")) sWantExit = true;
+  if (ImGui::Button(Tr("Back to the game"))) sWantExit = true;
   if (!sStatus.empty()) ImGui::TextWrapped("%s", sStatus.c_str());
-  ImGui::TextDisabled("Photos: %s", U8(sFolder).c_str());
+  ImGui::TextDisabled("%s", Fmt(Tr("Photos: %s"), U8(sFolder).c_str()).c_str());
   ImGui::End();
 }
 

@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.25)
-project(xd_port VERSION 0.4.2 LANGUAGES C CXX)
+project(xd_port VERSION 0.5.0 LANGUAGES C CXX)
 
 set(CMAKE_C_STANDARD 11)
 set(CMAKE_CXX_STANDARD 20)
@@ -179,6 +179,7 @@ if (APPLE)
   add_link_options(${XD_MAC_LOW_LINK_OPTIONS})
 endif ()
 
+include_directories(${CMAKE_CURRENT_SOURCE_DIR}/engine/i18n/include)
 add_subdirectory(platform)
 add_subdirectory(engine)
 add_subdirectory(launcher)

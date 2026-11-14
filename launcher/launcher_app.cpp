@@ -1,11 +1,13 @@
 #include "launcher.h"
 #include "launcher_extra.h"
+#include "launcher_pad.h"
 #include "launcher_reports.h"
 #include "launcher_sys.h"
 
 #include <mods.h>
 #include <save_backups.h>
 #include <save_slots.h>
+#include <i18n.h>
 #include <port_window_icon.h>
 #include <settings_ui.h>
 #include <update.h>
@@ -20,8 +22,11 @@
 #include <atomic>
 #include <cfloat>
 #include <chrono>
+#include <cstdarg>
 #include <cstdio>
+#include <cmath>
 #include <cstdlib>
+#include <deque>
 #include <cstring>
 #include <cwctype>
 #include <memory>
@@ -40,6 +45,52 @@ namespace bk = engine::memcard::backups;
 namespace sl = engine::memcard::slots;
 namespace ui = engine::settings_ui;
 namespace fs = std::filesystem;
+using engine::i18n::Tr;
+
+std::string Lbl(const char* translated, const char* id) { return std::string(translated) + "###" + id; }
+
+std::string ProgramsName() {
+  const std::string name = sys::ProgramsFolderName();
+  return name == "Start menu" ? Tr("Start menu") : name == "applications menu" ? Tr("applications menu") : name;
+}
+
+std::string SysWord(const char* word) {
+  const std::string w = word;
+  if (w == "the recycle bin") return Tr("the recycle bin");
+  if (w == "the trash") return Tr("the trash");
+  if (w == "Windows user name") return Tr("Windows user name");
+  if (w == "user name") return Tr("user name");
+  return w;
+}
+
+const char* KindWord(reports::Report::Kind kind) {
+  switch (kind) {
+  case reports::Report::Kind::Crash: return Tr("Crash");
+  case reports::Report::Kind::Stop: return Tr("Stopped");
+  case reports::Report::Kind::Stuck: return Tr("Stuck");
+  default: return Tr("F10 report");
+  }
+}
+const char* KindText(reports::Report::Kind kind) {
+  switch (kind) {
+  case reports::Report::Kind::Crash: return Tr("The game crashed, and made this report by itself.");
+  case reports::Report::Kind::Stop: return Tr("The game stopped itself because something went wrong, and made this report.");
+  case reports::Report::Kind::Stuck: return Tr("The game stopped moving (it hung), and made this report by itself.");
+  default: return Tr("You pressed F10 in the game.");
+  }
+}
+
+#if defined(__GNUC__) || defined(__clang__)
+__attribute__((format(printf, 1, 2)))
+#endif
+std::string Fmt(const char* fmt, ...) {
+  char buf[2048];
+  va_list args;
+  va_start(args, fmt);
+  std::vsnprintf(buf, sizeof buf, fmt, args);
+  va_end(args);
+  return buf;
+}
 
 constexpr const char* kDiscSetting = "system.disc_path";
 constexpr const char* kStaySetting = "system.launcher_stays_open";
@@ -78,6 +129,18 @@ const ImVec4 kAccent = Hex(0x9B6BFF), kAccentHover = Hex(0xB089FF), kAccentActiv
 const ImVec4 kGround = Hex(0x110B1C), kPanel = Hex(0x1A1329), kPanelHigh = Hex(0x231A37), kLine = Hex(0x302549);
 
 ImU32 U32(const ImVec4& c, float alpha = 1.0f) { return ImGui::GetColorU32(ImVec4(c.x, c.y, c.z, c.w * alpha)); }
+
+bool Hot(ImGuiHoveredFlags flags = 0) {
+  return ImGui::IsItemHovered(flags) || (ImGui::GetIO().NavVisible && ImGui::IsItemFocused());
+}
+
+std::string HexId(unsigned v) {
+  char b[16];
+  std::snprintf(b, sizeof b, "%08X", v);
+  return b;
+}
+
+constexpr float kControllerScale = 1.2f;
 
 void ApplyStyle(float scale) {
   ImGuiStyle& s = ImGui::GetStyle();
@@ -171,7 +234,7 @@ Fonts LoadFonts(float scale) {
   for (const sys::FontSet& set : sys::SystemFonts()) {
     choices.push_back({set.regular, set.strong, set.display});
   }
-  static const ImWchar kRanges[] = {0x0020, 0x00FF, 0x2010, 0x2027, 0x2190, 0x2193, 0};
+  static const ImWchar kRanges[] = {0x0020, 0x00FF, 0x0100, 0x017F, 0x2010, 0x2027, 0x20AC, 0x20AC, 0x2190, 0x2193, 0};
   ImFontConfig config;
   config.OversampleH = 2;
   config.OversampleV = 2;
@@ -408,7 +471,19 @@ std::vector<std::string> Split(const std::string& text, char sep) {
 }
 
 enum class Page { Disc, Extra, Preset, Settings, Controls, Mods, Save, Reports, Count };
-const char* const kPageNames[] = {"Disc", "Extra assets", "Preset", "Settings", "Controls", "Mods", "Save", "Reports"};
+const char* PageName(int page) {
+  switch (page) {
+  case 0: return Tr("Disc");
+  case 1: return Tr("Extra assets");
+  case 2: return Tr("Preset");
+  case 3: return Tr("Settings");
+  case 4: return Tr("Controls");
+  case 5: return Tr("Mods");
+  case 6: return Tr("Save");
+  case 7: return Tr("Reports");
+  default: return "";
+  }
+}
 const char* const kPageIds[] = {"disc", "extra", "preset", "settings", "controls", "mods", "save", "reports"};
 int GlyphOf(int page) { return page == static_cast<int>(Page::Extra) ? 7 : page > static_cast<int>(Page::Extra) ? page - 1 : page; }
 
@@ -464,11 +539,12 @@ struct UpdateWork {
 
 class App {
  public:
-  explicit App(const GameInfo& game) : game_(game) {}
+  explicit App(const GameInfo& game) : game_(game), files_(game.settingsFolder / L"launcher_recent_folders.txt") {}
   ~App() {
     StopWorker();
     StopUpdate();
     StopOpenRead();
+    StopImportScan();
     ExtraStop();
   }
   int Run();
@@ -513,6 +589,26 @@ class App {
   std::string waitFor_;
   std::string shotFile_;
   std::vector<SDL_Gamepad*> pads_;
+  pad::Input padIn_;
+  pad::Keyboard osk_;
+  pad::FileBrowser files_;
+  bool controller_ = false;
+  bool controllerFixed_ = false;
+  float baseScale_ = 1.0f;
+  bool rescale_ = false;
+  bool askMenu_ = false;
+  bool focusPage_ = false;
+  bool focusInNav_ = false;
+  int enterDelay_ = 0;
+  bool enterPage_ = false;
+  std::string curTab_;
+  std::vector<std::string> tabIds_;
+  uint64_t listenStart_ = 0;
+  std::string playWhy_;
+  float promptH_ = 0;
+  unsigned playId_ = 0;
+  std::deque<pad::Btn> padQueue_;
+  int padGap_ = 0;
   std::vector<uint16_t> fakeKeys_;
 
   SDL_Texture* ownIcon_ = nullptr;
@@ -561,6 +657,46 @@ class App {
   enum class SlotAsk { None, New, Rename, Delete } slotAsk_ = SlotAsk::None;
   std::string slotPicked_;
   int slotPickedKind_ = 0;
+  bool importOpen_ = false;
+  struct ImportScan {
+    std::thread thread;
+    std::atomic<bool> busy{false};
+    std::mutex mutex;
+    std::vector<GameInfo::ImportOffer> offers;
+    bool have = false;
+    bool logged = true;
+  } importScan_;
+  GameInfo::ImportOffer importFile_;
+  bool importHaveFile_ = false;
+  int importSel_ = -1;
+  std::string importError_;
+  void ImportFind();
+  void StopImportScan();
+  bool ImportPick(const std::string& arg);
+  bool ImportConfirm();
+  bool ImportCommit(const fs::path& file, const GameInfo::ImportCheck& check);
+  void DrawImport(bool locked);
+  std::string NamesDisc();
+  std::string tradeFor_;
+  fs::path tradeFile_;
+  GameInfo::Saves::TradeView tradeView_;
+  bool tradeHave_ = false;
+  std::string tradeError_;
+  int tradeMine_ = -1, tradeTheirs_ = -1;
+  std::string tradeMessage_;
+  bool tradeOk_ = false;
+  bool TradePick(const std::string& file);
+  bool TradeConfirm();
+  void DrawTrade(const sl::Slot& slot, bool locked);
+  std::string monsFor_;
+  fs::path monsFile_;
+  GameInfo::Saves::MonsView monsView_;
+  bool monsHave_ = false;
+  std::string monsError_;
+  std::vector<char> monsPicked_;
+  bool MonsPick(const std::string& file);
+  bool MonsConfirm();
+  void DrawMons(const sl::Slot& slot, bool locked);
   std::string openSlot_;
   bool openSlotSet_ = false;
   bool backupsShown_ = false;
@@ -583,6 +719,7 @@ class App {
   bool presetAsked_ = false;
   bool presetPending_ = false;
   bool askPreset_ = false;
+  bool welcomeFromStart_ = false;
   bool askUpdates_ = false;
   bool updatesAsked_ = false;
   std::string skipVersion_;
@@ -596,6 +733,7 @@ class App {
     std::mutex mutex;
     extra::Status status;
     extra::SecondStatus second;
+    std::vector<std::string> contents;
     bool converterFound = false;
     bool looked = false;
     std::thread looker;
@@ -619,6 +757,13 @@ class App {
   void ExtraPoll();
   bool ExtraBusy() const;
   void DrawExtraPage();
+  bool languageChanged_ = false;
+  std::string languageApplied_ = "\x01";
+  void FollowLanguage();
+  bool LanguageRowOn() const {
+    return !game_.languages.setting.empty() && game_.languages.offered &&
+           registry_.Find(game_.languages.setting) != es::kNoSetting;
+  }
   fs::path ExtraFolder(const GameInfo::ExtraSource& s) const { return game_.settingsFolder / "extra_assets" / PathOf(s.id); }
   fs::path ExtraFolder2(const GameInfo::ExtraSource& s) const {
     return s.secondFolder.empty() ? fs::path() : game_.settingsFolder / "extra_assets" / PathOf(s.secondFolder);
@@ -668,6 +813,21 @@ class App {
   void OpenInSystem(const fs::path& what);
   void DrawNotOpenedWindow();
   std::string notOpened_;
+
+  void SetController(bool on);
+  void ApplyScale();
+  void ShowOpenDialog(SDL_DialogFileCallback callback, void* user, SDL_Window* window, const SDL_DialogFileFilter* filters,
+                      int count, const char* start, bool many);
+  void ShowSaveDialog(SDL_DialogFileCallback callback, void* user, SDL_Window* window, const SDL_DialogFileFilter* filters,
+                      int count, const char* start);
+  void BrowseFor(pad::FileBrowser::Mode mode, SDL_DialogFileCallback callback, void* user,
+                 const SDL_DialogFileFilter* filters, int count, const char* start);
+  void PadShortcuts();
+  void DrawPadUi();
+  void DrawFileBrowser();
+  std::vector<pad::Prompt> CurrentPrompts();
+  bool BackPressed() const { return controller_ && padIn_.Pressed(pad::Btn::Cancel) && !osk_.Open(); }
+  std::vector<pad::PadInfo> PadInfos() const;
 
   void RunScript();
   bool DoStep(const std::string& step);
@@ -758,7 +918,7 @@ bool App::BeginCard(const char* id) {
   ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(16 * scale_, 14 * scale_));
   const bool open = ImGui::BeginChild(id, ImVec2(0, 0),
                                       ImGuiChildFlags_Borders | ImGuiChildFlags_AutoResizeY |
-                                          ImGuiChildFlags_AlwaysUseWindowPadding);
+                                          ImGuiChildFlags_AlwaysUseWindowPadding | ImGuiChildFlags_NavFlattened);
   return open;
 }
 
@@ -773,8 +933,9 @@ bool App::PlayButton(const char* label, ImVec2 size, bool enabled) {
   if (!enabled) {
     ImGui::BeginDisabled();
   }
-  const bool clicked = ImGui::InvisibleButton("##play", size);
-  const bool hovered = ImGui::IsItemHovered(), held = ImGui::IsItemActive();
+  const bool clicked = ImGui::InvisibleButton("##play", size, ImGuiButtonFlags_EnableNav);
+  const bool hovered = Hot(), held = ImGui::IsItemActive();
+  playId_ = ImGui::GetItemID();
   if (!enabled) {
     ImGui::EndDisabled();
   }
@@ -812,16 +973,31 @@ void App::LoadSettings() {
     Log("settings: " + w);
   });
   game_.registerSettings(registry_);
-  settingsFileFound_ = registry_.Load(game_.settingsFolder);
-  if (settingsFileFound_) {
+  const bool loaded = registry_.Load(game_.settingsFolder);
+  settingsFileFound_ = loaded;
+  FollowLanguage();
+  if (loaded) {
     Log("read " + Utf8(game_.settingsFolder / es::Registry::kFileName));
     for (const std::string& id : registry_.LastLoad().unknownIds) {
-      settingsNotes_.push_back("settings.ini has \"" + id + "\", which this version doesn't know (kept as it is)");
+      settingsNotes_.push_back(Fmt(Tr("settings.ini has \"%s\", which this version doesn't know (kept as it is)"), id.c_str()));
     }
   } else {
     Log("no " + Utf8(game_.settingsFolder / es::Registry::kFileName) + " yet: the defaults (Original)");
   }
   savedChanges_ = registry_.Changes();
+}
+
+void App::FollowLanguage() {
+  if (game_.languages.setting.empty() || registry_.Find(game_.languages.setting) == es::kNoSetting) {
+    return;
+  }
+  const std::string value = registry_.ValueText(registry_.Find(game_.languages.setting));
+  if (value == languageApplied_) {
+    return;
+  }
+  languageApplied_ = value;
+  const bool table = engine::i18n::SetLanguage(value);
+  Log("language: " + value + (table ? " (texts of this port translated)" : " (English)"));
 }
 
 void App::SaveSettingsIfChanged() {
@@ -838,14 +1014,14 @@ void App::SaveSettingsIfChanged() {
   if (registry_.Save(game_.settingsFolder)) {
     saveError_.clear();
   } else {
-    saveError_ = "Your settings couldn't be saved to " + Utf8(game_.settingsFolder / es::Registry::kFileName) + ".";
+    saveError_ = Fmt(Tr("Your settings couldn't be saved to %s."), Utf8(game_.settingsFolder / es::Registry::kFileName).c_str());
   }
 }
 
 void App::SelectDisc(const std::string& path) {
   Log("disc: " + path);
   if (!registry_.SetText(kDiscSetting, path)) {
-    playError_ = "This file name can't be used: " + path;
+    playError_ = Fmt(Tr("This file name can't be used: %s"), path.c_str());
     return;
   }
   SaveSettingsIfChanged();
@@ -936,8 +1112,8 @@ void App::StartWorker(const std::string& discPath) {
           discPath, verdict.gameId,
           [this] {
             std::lock_guard<std::mutex> lock(bg_.mutex);
-            bg_.iconNote = "Drawing more icons and backgrounds from the game's own 3D models (about a minute; once "
-                           "for this disc)...";
+            bg_.iconNote = Tr("Drawing more icons and backgrounds from the game's own 3D models (about a minute; once "
+                              "for this disc)...");
           },
           [this] { return bg_.stop.load() || bg_.stopDrawing.load(); }, error);
       if (!ok) {
@@ -983,7 +1159,8 @@ void App::MakeDiscIcon(const std::string& discPath, const std::string& gameId) {
     icon::Image banner;
     std::string error;
     if (!game_.readDiscPictures(discPath, pictures, banner, error)) {
-      note = "No icon could be made from this disc" + (error.empty() ? std::string(".") : ": " + error);
+      note = error.empty() ? std::string(Tr("No icon could be made from this disc."))
+                           : Fmt(Tr("No icon could be made from this disc: %s"), error.c_str());
     }
     std::string listText, groundText;
     for (GameInfo::DiscPicture& p : pictures) {
@@ -1006,7 +1183,7 @@ void App::MakeDiscIcon(const std::string& discPath, const std::string& gameId) {
       c.name = p.name;
       c.file = game_.iconFolder / (key + "_" + c.id + ".ico");
       if (c.id.empty() || !icon::WriteIco(c.file, sizes)) {
-        note = "The icons couldn't be saved in " + Utf8(game_.iconFolder) + ".";
+        note = Fmt(Tr("The icons couldn't be saved in %s."), Utf8(game_.iconFolder).c_str());
         continue;
       }
       SavePng(sizes.back(), game_.iconFolder / (key + "_" + c.id + ".png"));
@@ -1032,7 +1209,7 @@ void App::MakeDiscIcon(const std::string& discPath, const std::string& gameId) {
         if (!img.Empty()) {
           grounds.insert(grounds.begin(),
                          Background::GroundChoice{"rendered_" + FileKey(Utf8(e.path().stem())),
-                                                  Utf8(e.path().stem()) + " (rendered)", std::move(img)});
+                                                  Fmt(Tr("%s (rendered)"), Utf8(e.path().stem()).c_str()), std::move(img)});
         }
       }
     }
@@ -1049,7 +1226,7 @@ void App::MakeDiscIcon(const std::string& discPath, const std::string& gameId) {
       if (!name.empty() && name[0] >= 'a' && name[0] <= 'z') {
         name[0] = static_cast<char>(name[0] - 'a' + 'A');
       }
-      c.name = name + " (3D render)";
+      c.name = Fmt(Tr("%s (3D render)"), name.c_str());
     }
     c.file = game_.iconFolder / (key + "_" + c.id + ".ico");
     if (!fs::exists(c.file, ec) || fs::last_write_time(c.file, ec) < fs::last_write_time(e.path(), ec)) {
@@ -1067,7 +1244,7 @@ void App::MakeDiscIcon(const std::string& discPath, const std::string& gameId) {
     c.preview = ReadIcoSize(c.file, 64);
   }
   if (note.empty() && !choices.empty()) {
-    note = "Made from your disc, only on this PC: " + Utf8(game_.iconFolder);
+    note = Fmt(Tr("Made from your disc, only on this PC: %s"), Utf8(game_.iconFolder).c_str());
   }
   std::lock_guard<std::mutex> lock(bg_.mutex);
   bg_.haveIcon = true;
@@ -1236,8 +1413,7 @@ void App::Shortcut(bool desktop) {
   }
   if (folder.empty()) {
     shortcutOk_ = false;
-    shortcutMessage_ = std::string("The system didn't say where your ") +
-                       (desktop ? "desktop" : sys::ProgramsFolderName()) + " is.";
+    shortcutMessage_ = Fmt(Tr("The system didn't say where your %s is."), desktop ? Tr("desktop") : ProgramsName().c_str());
     return;
   }
   shortcutOk_ = sys::MakeShortcut(folder, game_.title, game_.title + " " + game_.subtitle, game_.shortcutTarget,
@@ -1248,16 +1424,16 @@ void App::Shortcut(bool desktop) {
 bool App::DiscPlayable(std::string& why) {
   const std::string path = DiscPath();
   if (path.empty()) {
-    why = "Choose your disc image first (Disc page).";
+    why = Tr("Choose your disc image first (Disc page).");
     return false;
   }
   std::lock_guard<std::mutex> lock(bg_.mutex);
   if (!bg_.haveVerdict || bg_.discPath != path) {
-    why = "The disc is being checked...";
+    why = Tr("The disc is being checked...");
     return false;
   }
   if (bg_.verdict.kind == DiscVerdict::Kind::Problem) {
-    why = "This disc image can't be used (see the Disc page).";
+    why = Tr("This disc image can't be used (see the Disc page).");
     return false;
   }
   return true;
@@ -1273,7 +1449,10 @@ void App::ReloadMods() {
   }
   const std::vector<std::string> fresh = em::AddNewMods(mods_, found_);
   for (const std::string& id : fresh) {
-    modMessages_.push_back({em::Message::Level::Info, "New mod found: " + id + " (added, switched off)"});
+    const bool pack = std::any_of(found_.begin(), found_.end(), [&](const em::ModFolder& f) { return f.texturePack && f.manifest.id == id; });
+    modMessages_.push_back({em::Message::Level::Info,
+                            pack ? Fmt(Tr("New texture pack found: %s (added, switched on: it only changes pictures)"), id.c_str())
+                                 : Fmt(Tr("New mod found: %s (added, switched off)"), id.c_str())});
   }
   if (!fresh.empty() || (!exists && !found_.empty())) {
     SaveMods();
@@ -1290,7 +1469,7 @@ void App::SaveMods() {
   if (em::WriteModListFile(game_.modListFile, mods_)) {
     modError_.clear();
   } else {
-    modError_ = "The mod list couldn't be saved to " + Utf8(game_.modListFile) + ".";
+    modError_ = Fmt(Tr("The mod list couldn't be saved to %s."), Utf8(game_.modListFile).c_str());
   }
 }
 
@@ -1303,7 +1482,7 @@ bool App::StartGame(std::string& error) {
   std::string why;
   gameProcess_ = sys::StartProgram(request, why);
   if (gameProcess_ == nullptr) {
-    error = "The game couldn't be started (" + Utf8(game_.program) + ", " + why + "). Is it next to the launcher?";
+    error = Fmt(Tr("The game couldn't be started (%s, %s). Is it next to the launcher?"), Utf8(game_.program).c_str(), why.c_str());
     return false;
   }
   gameRunning_ = true;
@@ -1463,20 +1642,20 @@ void App::StartUpdateCheck(bool manual) {
     UpdateWork::Phase phase = UpdateWork::Phase::Failed;
     std::string message;
     if (!eu::FetchToString(u.feedUrl, options, text, error)) {
-      message = "Couldn't check for updates: " + error + ".";
+      message = Fmt(Tr("Couldn't check for updates: %s."), error.c_str());
     } else if (!eu::ParseSignedManifest(text, u.publicKey, u.product, m, error)) {
-      message = "The update information was refused: " + error + ".";
+      message = Fmt(Tr("The update information was refused: %s."), error.c_str());
     } else if (!m.hasPackage) {
       phase = UpdateWork::Phase::UpToDate;
-      message = "You have the newest version (" + have + ").";
+      message = Fmt(Tr("You have the newest version (%s)."), have.c_str());
       Log("updates: the information names version " + m.version + " but has no package for " +
           std::string(eu::CurrentSystem()) + " yet");
     } else if (eu::IsNewer(m.version, have)) {
       phase = UpdateWork::Phase::Available;
-      message = "Version " + m.version + " is available (you have " + have + ").";
+      message = Fmt(Tr("Version %s is available (you have %s)."), m.version.c_str(), have.c_str());
     } else {
       phase = UpdateWork::Phase::UpToDate;
-      message = "You have the newest version (" + have + ").";
+      message = Fmt(Tr("You have the newest version (%s)."), have.c_str());
     }
     Log("updates: " + message);
     std::lock_guard<std::mutex> lock(up_.mutex);
@@ -1502,7 +1681,7 @@ void App::StartUpdateInstall() {
     m = up_.manifest;
     up_.phase = UpdateWork::Phase::Downloading;
     up_.installing = true;
-    up_.message = "Downloading version " + m.version + "...";
+    up_.message = Fmt(Tr("Downloading version %s..."), m.version.c_str());
   }
   StopUpdate();
   FindVersions();
@@ -1530,7 +1709,7 @@ void App::StartUpdateInstall() {
     ok = ok && eu::FetchToFile(m.url, zip, options, error);
     if (ok) {
       std::lock_guard<std::mutex> lock(up_.mutex);
-      up_.message = "Checking and unpacking version " + m.version + "...";
+      up_.message = Fmt(Tr("Checking and unpacking version %s..."), m.version.c_str());
     }
     eu::InstallRequest request;
     request.layout = layout;
@@ -1545,14 +1724,19 @@ void App::StartUpdateInstall() {
       up_.phase = UpdateWork::Phase::Installed;
       up_.installed = installed;
       up_.message = layout.macApp
-                        ? "Version " + m.version + " is ready. It is put in place when you restart " + game_.title +
-                              " (the app is replaced after this window closes, then opens again)."
-                        : "Version " + m.version + " is installed. It starts the next time you open " + game_.title + ".";
+                        ? Fmt(Tr("Version %s is ready. It is put in place when you restart %s (the app is replaced after "
+                                 "this window closes, then opens again)."),
+                              m.version.c_str(), game_.title.c_str())
+                        : Fmt(Tr("Version %s is installed. It starts the next time you open %s."), m.version.c_str(),
+                              game_.title.c_str());
     } else {
       up_.phase = UpdateWork::Phase::Failed;
-      up_.message = (error == "stopped" ? std::string("The update was cancelled") :
-                                          "The update couldn't be installed: " + error) +
-                    ". Nothing was changed: your version (" + u.version + ") stays as it is.";
+      up_.message = error == "stopped"
+                        ? Fmt(Tr("The update was cancelled. Nothing was changed: your version (%s) stays as it is."),
+                              u.version.c_str())
+                        : Fmt(Tr("The update couldn't be installed: %s. Nothing was changed: your version (%s) stays as it "
+                                 "is."),
+                              error.c_str(), u.version.c_str());
     }
     Log("updates: " + up_.message + (ok ? " (" + installed + ")" : ""));
     up_.serial++;
@@ -1601,11 +1785,12 @@ bool App::GoBackVersion(std::string& error) {
     SaveUpdaterState();
   }
   FindVersions();
-  versionNote_ = setAside ? "The waiting update (version " + leaving + ") was set aside: version " + back + " stays."
-                 : layout_.macApp ? "Version " + back + " is put in place when you restart " + game_.title + " (version " +
-                                        leaving + " is kept)."
-                                  : "Version " + back + " starts the next time you open " + game_.title + " (version " +
-                                        leaving + " stays installed).";
+  versionNote_ = setAside ? Fmt(Tr("The waiting update (version %s) was set aside: version %s stays."), leaving.c_str(),
+                                back.c_str())
+                 : layout_.macApp ? Fmt(Tr("Version %s is put in place when you restart %s (version %s is kept)."),
+                                        back.c_str(), game_.title.c_str(), leaving.c_str())
+                                  : Fmt(Tr("Version %s starts the next time you open %s (version %s stays installed)."),
+                                        back.c_str(), game_.title.c_str(), leaving.c_str());
   Log("updates: " + versionNote_);
   return true;
 }
@@ -1620,13 +1805,16 @@ void App::RestartLauncher() {
       Log("updates: restarting through the update helper");
       quit_ = true;
     } else if (!why.empty()) {
-      versionNote_ = "The restart didn't work: " + why + ". Close this window and open " + game_.title + " again.";
+      versionNote_ = Fmt(Tr("The restart didn't work: %s. Close this window and open %s again."), why.c_str(),
+                         game_.title.c_str());
     } else {
-      versionNote_ = "Nothing is waiting to be put in place.";
+      versionNote_ = Tr("Nothing is waiting to be put in place.");
     }
     return;
   }
-  const fs::path starter = layout_.root / PathOf(game_.updates.starterName);
+  const fs::path starter =
+      layout_.root / PathOf(!layout_.starter.empty() ? layout_.starter
+                            : !layout_.starterNames.empty() ? layout_.starterNames.front() : game_.updates.starterName);
   sys::StartRequest request;
   request.program = starter;
   request.folder = layout_.root;
@@ -1637,32 +1825,32 @@ void App::RestartLauncher() {
     Log("updates: restarted through " + Utf8(starter));
     quit_ = true;
   } else {
-    versionNote_ = "Please close this window and open " + game_.title + " again (the restart didn't work: " + why +
-                   ").";
+    versionNote_ = Fmt(Tr("Please close this window and open %s again (the restart didn't work: %s)."),
+                       game_.title.c_str(), why.c_str());
   }
 }
 
 void App::DrawUpdateCard() {
-  Heading("Version and updates");
+  Heading(Tr("Version and updates"));
   BeginCard("##updates");
   const GameInfo::Updates& u = game_.updates;
-  ImGui::Text("Version %s", u.version.c_str());
+  ImGui::Text(Tr("Version %s"), u.version.c_str());
   if (layout_.valid && layout_.running != eu::kFirstFolder) {
     ImGui::SameLine();
-    ImGui::TextColored(kFaint, "(in the folder %s)", layout_.running.c_str());
+    ImGui::TextColored(kFaint, Tr("(in the folder %s)"), layout_.running.c_str());
   }
   if (!u.Active()) {
     EndCard();
     return;
   }
   bool check = registry_.Bool(kUpdateSetting).Get();
-  if (ImGui::Checkbox("Check for updates when the launcher starts", &check)) {
+  if (ImGui::Checkbox(Lbl(Tr("Check for updates when the launcher starts"), "Check for updates when the launcher starts").c_str(), &check)) {
     registry_.SetBool(kUpdateSetting, check);
     updatesAsked_ = true;
     SaveUpdaterState();
   }
-  Dim("It only looks. If there is a newer version, the launcher shows what's new and asks you first: nothing is ever "
-      "downloaded or installed without your yes. Your saves, settings and mods are never touched by an update.");
+  Dim(Tr("It only looks. If there is a newer version, the launcher shows what's new and asks you first: nothing is ever "
+         "downloaded or installed without your yes. Your saves, settings and mods are never touched by an update."));
   UpdateWork::Phase phase;
   std::string message, available;
   {
@@ -1675,7 +1863,8 @@ void App::DrawUpdateCard() {
   if (busy) {
     ImGui::BeginDisabled();
   }
-  if (ImGui::Button(phase == UpdateWork::Phase::Checking ? "Checking..." : "Check now")) {
+  if (ImGui::Button(phase == UpdateWork::Phase::Checking ? Lbl(Tr("Checking..."), "Check now").c_str()
+                                                         : Lbl(Tr("Check now"), "Check now").c_str())) {
     StartUpdateCheck(true);
   }
   if (busy) {
@@ -1683,7 +1872,7 @@ void App::DrawUpdateCard() {
   }
   if (phase == UpdateWork::Phase::Available && !busy) {
     ImGui::SameLine();
-    if (ImGui::Button(("See version " + available + "...").c_str())) {
+    if (ImGui::Button(Lbl(Fmt(Tr("See version %s..."), available.c_str()).c_str(), "seeversion").c_str())) {
       openUpdates_ = true;
     }
   }
@@ -1704,13 +1893,14 @@ void App::DrawUpdateCard() {
     const bool another = layout_.current != layout_.running;
     if (another) {
       const std::string next = FolderVersionOf(layout_.current);
-      const std::string line = !versionNote_.empty() ? versionNote_
-                                                     : "Version " + (next.empty() ? layout_.current : next) +
-                                                           " starts the next time you open " + game_.title + ".";
+      const std::string line = !versionNote_.empty()
+                                   ? versionNote_
+                                   : Fmt(Tr("Version %s starts the next time you open %s."),
+                                         (next.empty() ? layout_.current : next).c_str(), game_.title.c_str());
       ImGui::PushStyleColor(ImGuiCol_Text, kGood);
       ImGui::TextWrapped("%s", line.c_str());
       ImGui::PopStyleColor();
-      if (!gameRunning_ && ImGui::Button("Restart now")) {
+      if (!gameRunning_ && ImGui::Button(Lbl(Tr("Restart now"), "Restart now").c_str())) {
         RestartLauncher();
       }
     } else if (!versionNote_.empty()) {
@@ -1719,12 +1909,12 @@ void App::DrawUpdateCard() {
     if (!layout_.previous.empty() && eu::FolderUsable(eu::GameFolderPath(layout_, layout_.previous), u.requiredFiles)) {
       const std::string v = FolderVersionOf(layout_.previous);
       const std::string label = eu::IsNewer(v, FolderVersionOf(layout_.current))
-                                    ? "Use version " + v + " again..."
-                                    : "Go back to the previous version (" + v + ")...";
+                                    ? Fmt(Tr("Use version %s again..."), v.c_str())
+                                    : Fmt(Tr("Go back to the previous version (%s)..."), v.c_str());
       if (busy) {
         ImGui::BeginDisabled();
       }
-      if (ImGui::Button(label.c_str())) {
+      if (ImGui::Button(Lbl(label.c_str(), "goback").c_str())) {
         openGoBack_ = true;
       }
       if (busy) {
@@ -1785,68 +1975,70 @@ void App::ChoosePreset(es::Preset preset) {
 
 void App::DrawWelcomeWindow() {
   if (askPreset_) {
-    ImGui::OpenPopup("welcome##preset");
+    ImGui::OpenPopup("###welcome");
     askPreset_ = false;
   }
   const ImGuiViewport* vp = ImGui::GetMainViewport();
   const float width = std::min(960 * scale_, vp->WorkSize.x - 40 * scale_);
-  const float height = std::min(620 * scale_, vp->WorkSize.y - 30 * scale_);
+  const float height = std::min(680 * scale_, vp->WorkSize.y - 30 * scale_);
   ImGui::SetNextWindowPos(vp->GetCenter(), ImGuiCond_Always, ImVec2(0.5f, 0.5f));
   ImGui::SetNextWindowSize(ImVec2(width, height), ImGuiCond_Always);
-  bool open = true;
-  if (!ImGui::BeginPopupModal("welcome##preset", &open, ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoTitleBar)) {
+  if (!ImGui::BeginPopupModal(Lbl(Tr("How do you want to play?"), "welcome").c_str(), nullptr, ImGuiWindowFlags_NoSavedSettings)) {
     return;
   }
   if (closeWindows_) {
     ImGui::CloseCurrentPopup();
   }
-  const auto bullets = [&](std::initializer_list<const char*> lines) {
-    for (const char* line : lines) {
+  const auto bullets = [&](std::initializer_list<std::string> lines) {
+    for (const std::string& line : lines) {
       ImGui::Bullet();
-      ImGui::TextWrapped("%s", line);
+      ImGui::TextWrapped("%s", line.c_str());
     }
   };
-  Heading("How do you want to play?");
   if (ImGui::BeginTable("##presets", 2, ImGuiTableFlags_SizingStretchSame | ImGuiTableFlags_BordersInnerV |
                                             ImGuiTableFlags_PadOuterX)) {
     ImGui::TableNextRow();
     ImGui::TableNextColumn();
-    Heading("Original");
-    ImGui::TextWrapped("Exactly the GameCube game: same speed, same rules, same random numbers.");
+    Heading(Tr("Original"));
+    ImGui::TextWrapped("%s", Tr("Exactly the GameCube game: same speed, same rules, same random numbers."));
     ImGui::Spacing();
-    ImGui::TextColored(kWarn, "Not available in Original:");
-    bullets({"The New Game setup screen",
-             "Randomizer",
-             "Challenge runs: Nuzlocke, level caps, no items in battle",
-             "Gen 4 Pokemon and rules (with the Battle Revolution assets)",
-             "Speed-ups: fast-forward, faster text, faster loading and saving",
-             "Widescreen, a sharper picture, photo mode"});
+    ImGui::TextColored(kWarn, "%s", Tr("Not available in Original:"));
+    bullets({Tr("The New Game setup screen"),
+             Tr("Randomizer"),
+             Tr("Challenge runs: Nuzlocke, level caps, no items in battle"),
+             Tr("Gen 4 Pokemon and rules, Fairy type, shiny odds"),
+             Tr("Speed-ups: fast-forward, faster text, faster loading and saving"),
+             Tr("Widescreen, a sharper picture, photo mode, HD texture packs")});
     ImGui::Spacing();
-    Dim("Allowed in Original too: button remapping, volumes and full screen.");
+    Dim(Tr("Allowed in Original too: button remapping, volumes, full screen and the speedrun timer."));
+    Dim(Tr("Online battles and online trading work in Original too; trading in a Faithful save only receives Pokemon the "
+           "GameCube game could have."));
     ImGui::TableNextColumn();
-    Heading("Enhanced (recommended for most players)");
-    ImGui::TextWrapped("The GameCube game plus the PC port's improvements:");
+    Heading(Tr("Enhanced (recommended for most players)"));
+    ImGui::TextWrapped("%s", Tr("The GameCube game plus the PC port's improvements:"));
     ImGui::Spacing();
-    bullets({"A sharper picture that fills your window, widescreen, even frame pacing",
-             "Shorter waits: faster text, loading and saving, and a fast-forward key",
-             "Your controller's own button pictures, photo mode, a pause when the window is in the background"});
+    bullets({Tr("A sharper picture that fills your window, widescreen, even frame pacing"),
+             Tr("Shorter waits: faster text, loading and saving, and a fast-forward key"),
+             Tr("TMs listed with their move, your controller's own button pictures, photo mode, a pause when the window is in "
+                "the background")});
     ImGui::Spacing();
-    ImGui::TextWrapped("The New Game setup lets you choose randomizer, challenge runs, Gen 4 Pokemon and rules and more for "
-                       "each new save.");
+    ImGui::TextWrapped("%s", Tr("The New Game setup lets you choose randomizer, challenge runs, Gen 4 Pokemon and rules, "
+                                "Fairy type, shiny odds and more for each new save."));
     ImGui::Spacing();
-    Dim("The game's own rules stay as they were until you choose otherwise.");
+    Dim(Tr("The game's own rules stay as they were until you choose otherwise."));
+    Dim(Tr("Online battles and online trading are available here too."));
     ImGui::EndTable();
   }
   ImGui::Spacing();
   ImGui::PushTextWrapPos(0);
-  Dim("You can change this any time on the Preset page. Each save remembers how it was started: when it differs from your "
-      "choice, the game asks at Continue whether to keep it or switch. If you close this window without choosing, "
-      "Enhanced is used and you are asked again next time.");
+  Dim(Tr("You can change this any time on the Preset page. Each save remembers how it was started: when it differs "
+         "from your choice, the game asks at Continue whether to keep it or switch."));
+  Dim(Tr("If you close this window without choosing, Enhanced is used and you are asked again next time."));
   ImGui::PopTextWrapPos();
   ImGui::Spacing();
   const float gap = ImGui::GetStyle().ItemSpacing.x;
   const ImVec2 big((ImGui::GetContentRegionAvail().x - gap) * 0.5f, 52 * scale_);
-  if (ImGui::Button("Play Original", big)) {
+  if (ImGui::Button(Lbl(Tr("Play Original"), "welcome-original").c_str(), big)) {
     ChoosePreset(es::Preset::Original);
     ImGui::CloseCurrentPopup();
   }
@@ -1854,14 +2046,14 @@ void App::DrawWelcomeWindow() {
   ImGui::PushStyleColor(ImGuiCol_Button, kAccent);
   ImGui::PushStyleColor(ImGuiCol_ButtonHovered, kAccentHover);
   ImGui::PushStyleColor(ImGuiCol_ButtonActive, kAccentActive);
-  const bool enhanced = ImGui::Button("Play Enhanced", big);
+  const bool enhanced = ImGui::Button(Lbl(Tr("Play Enhanced"), "welcome-enhanced").c_str(), big);
   ImGui::PopStyleColor(3);
   ImGui::SetItemDefaultFocus();
   if (enhanced) {
     ChoosePreset(es::Preset::Enhanced);
     ImGui::CloseCurrentPopup();
   }
-  if (ImGui::IsKeyPressed(ImGuiKey_Escape, false)) {
+  if (BackPressed() || ImGui::IsKeyPressed(ImGuiKey_Escape, false)) {
     ImGui::CloseCurrentPopup();
   }
   ImGui::EndPopup();
@@ -1873,21 +2065,22 @@ void App::DrawUpdateWindows() {
     return;
   }
   const float wrap = 560 * scale_;
-  if (askUpdates_ && !askPreset_ && !ImGui::IsPopupOpen("welcome##preset")) {
-    ImGui::OpenPopup("Updates##ask");
+  if (askUpdates_ && !askPreset_ && !ImGui::IsPopupOpen("###welcome")) {
+    ImGui::OpenPopup("###ask");
     askUpdates_ = false;
   }
-  if (ImGui::BeginPopupModal("Updates##ask", nullptr, ImGuiWindowFlags_AlwaysAutoResize)) {
+  if (ImGui::BeginPopupModal(Lbl(Tr("Updates"), "ask").c_str(), nullptr, ImGuiWindowFlags_AlwaysAutoResize)) {
     if (closeWindows_) {
       ImGui::CloseCurrentPopup();
     }
-    Heading("Check for updates when the launcher starts?");
+    Heading(Tr("Check for updates when the launcher starts?"));
     ImGui::PushTextWrapPos(wrap);
-    ImGui::TextUnformatted(("If you say yes, the launcher looks for a newer version of " + game_.title +
-                            " each time it starts. It only looks: when there is one, it shows what's new and asks you "
-                            "before downloading anything. If you say no, it never goes online by itself.")
+    ImGui::TextUnformatted(Fmt(Tr("If you say yes, the launcher looks for a newer version of %s each time it starts. It "
+                                  "only looks: when there is one, it shows what's new and asks you before downloading "
+                                  "anything. If you say no, it never goes online by itself."),
+                               game_.title.c_str())
                                .c_str());
-    Dim("You can change this any time on the Disc page (\"Version and updates\"), where \"Check now\" also works.");
+    Dim(Tr("You can change this any time on the Disc page (\"Version and updates\"), where \"Check now\" also works."));
     ImGui::PopTextWrapPos();
     ImGui::Spacing();
     const auto answer = [&](bool yes) {
@@ -1901,21 +2094,21 @@ void App::DrawUpdateWindows() {
         StartUpdateCheck(false);
       }
     };
-    if (PrimaryButton("Yes, check at start")) {
+    if (PrimaryButton(Lbl(Tr("Yes, check at start"), "Yes, check at start").c_str())) {
       answer(true);
     }
     ImGui::SameLine();
-    if (ImGui::Button("No")) {
+    if (ImGui::Button(Lbl(Tr("No"), "No").c_str())) {
       answer(false);
     }
     ImGui::EndPopup();
   }
 
   if (openUpdates_) {
-    ImGui::OpenPopup("Update##offer");
+    ImGui::OpenPopup("###offer");
     openUpdates_ = false;
   }
-  if (ImGui::BeginPopupModal("Update##offer", nullptr, ImGuiWindowFlags_AlwaysAutoResize)) {
+  if (ImGui::BeginPopupModal(Lbl(Tr("Update"), "offer").c_str(), nullptr, ImGuiWindowFlags_AlwaysAutoResize)) {
     if (closeWindows_) {
       ImGui::CloseCurrentPopup();
     }
@@ -1930,26 +2123,27 @@ void App::DrawUpdateWindows() {
     }
     ImGui::PushTextWrapPos(wrap);
     if (phase == UpdateWork::Phase::Available) {
-      Heading(("Version " + m.version + " is available").c_str());
-      Dim("You have version " + NewestInstalled() + (m.date.empty() ? "" : ". Published " + m.date) + ". Download: " +
-          MegaBytes(m.size) + ".");
+      Heading(Fmt(Tr("Version %s is available"), m.version.c_str()).c_str());
+      Dim(m.date.empty() ? Fmt(Tr("You have version %s. Download: %s."), NewestInstalled().c_str(), MegaBytes(m.size).c_str())
+                         : Fmt(Tr("You have version %s. Published %s. Download: %s."), NewestInstalled().c_str(),
+                               m.date.c_str(), MegaBytes(m.size).c_str()));
       if (!m.notes.empty()) {
         ImGui::Spacing();
-        ImGui::TextUnformatted("What's new:");
+        ImGui::TextUnformatted(Tr("What's new:"));
         ImGui::BeginChild("##notes", ImVec2(wrap, std::min(220 * scale_, ImGui::GetTextLineHeightWithSpacing() * 12)),
-                          ImGuiChildFlags_Borders);
+                          ImGuiChildFlags_Borders | ImGuiChildFlags_NavFlattened);
         ImGui::PushTextWrapPos(0);
         ImGui::TextUnformatted(m.notes.c_str());
         ImGui::PopTextWrapPos();
         ImGui::EndChild();
       }
       if (m.version == skipVersion_) {
-        Dim("You chose to skip this version earlier.");
+        Dim(Tr("You chose to skip this version earlier."));
       }
-      Dim(layout_.macApp ? "The new app waits beside the one you have and is put in place when you restart; the "
-                           "version you have is kept for \"Go back\". Your saves, settings and mods are not touched."
-                         : "Installed next to the version you have, which stays for \"Go back\". Your saves, settings "
-                           "and mods are not touched.");
+      Dim(layout_.macApp ? Tr("The new app waits beside the one you have and is put in place when you restart; the "
+                              "version you have is kept for \"Go back\". Your saves, settings and mods are not touched.")
+                         : Tr("Installed next to the version you have, which stays for \"Go back\". Your saves, settings "
+                              "and mods are not touched."));
       if (!layout_.valid) {
         ImGui::TextColored(kWarn, "%s", layout_.why.c_str());
       }
@@ -1957,45 +2151,45 @@ void App::DrawUpdateWindows() {
       if (!layout_.valid || gameRunning_) {
         ImGui::BeginDisabled();
       }
-      if (PrimaryButton("Update now")) {
+      if (PrimaryButton(Lbl(Tr("Update now"), "Update now").c_str())) {
         StartUpdateInstall();
       }
       if (!layout_.valid || gameRunning_) {
         ImGui::EndDisabled();
       }
       ImGui::SameLine();
-      if (ImGui::Button("Not now")) {
+      if (ImGui::Button(Lbl(Tr("Not now"), "Not now").c_str()) || BackPressed()) {
         Log("updates: not now");
         ImGui::CloseCurrentPopup();
       }
       ImGui::SameLine();
-      if (ImGui::Button("Skip this version")) {
+      if (ImGui::Button(Lbl(Tr("Skip this version"), "Skip this version").c_str())) {
         SkipUpdate();
         ImGui::CloseCurrentPopup();
       }
     } else if (phase == UpdateWork::Phase::Downloading) {
-      Heading(("Updating to version " + m.version).c_str());
+      Heading(Fmt(Tr("Updating to version %s"), m.version.c_str()).c_str());
       ImGui::TextUnformatted(message.c_str());
       const uint64_t total = up_.total, done = up_.done;
       ImGui::ProgressBar(total > 0 ? static_cast<float>(static_cast<double>(done) / static_cast<double>(total)) : 0.0f,
-                         ImVec2(wrap, 0), (MegaBytes(done) + " of " + MegaBytes(total)).c_str());
-      if (ImGui::Button("Cancel")) {
+                         ImVec2(wrap, 0), Fmt(Tr("%s of %s"), MegaBytes(done).c_str(), MegaBytes(total).c_str()).c_str());
+      if (ImGui::Button(Lbl(Tr("Cancel"), "Cancel").c_str())) {
         up_.stop = true;
       }
     } else {
-      Heading(phase == UpdateWork::Phase::Installed ? "Update installed" : "The update was not installed");
+      Heading(phase == UpdateWork::Phase::Installed ? Tr("Update installed") : Tr("The update was not installed"));
       ImGui::PushStyleColor(ImGuiCol_Text, phase == UpdateWork::Phase::Failed ? kWarn : kText);
       ImGui::TextWrapped("%s", message.c_str());
       ImGui::PopStyleColor();
       ImGui::Spacing();
       if (phase == UpdateWork::Phase::Installed && layout_.valid && !gameRunning_) {
-        if (PrimaryButton("Restart now")) {
+        if (PrimaryButton(Lbl(Tr("Restart now"), "Restart now").c_str())) {
           ImGui::CloseCurrentPopup();
           RestartLauncher();
         }
         ImGui::SameLine();
       }
-      if (ImGui::Button(phase == UpdateWork::Phase::Installed ? "Later" : "OK")) {
+      if (ImGui::Button(phase == UpdateWork::Phase::Installed ? Lbl(Tr("Later"), "Later").c_str() : Lbl(Tr("OK"), "OK").c_str()) || BackPressed()) {
         ImGui::CloseCurrentPopup();
       }
     }
@@ -2004,31 +2198,31 @@ void App::DrawUpdateWindows() {
   }
 
   if (openGoBack_) {
-    ImGui::OpenPopup("Version##back");
+    ImGui::OpenPopup("###back");
     openGoBack_ = false;
   }
-  if (ImGui::BeginPopupModal("Version##back", nullptr, ImGuiWindowFlags_AlwaysAutoResize)) {
+  if (ImGui::BeginPopupModal(Lbl(Tr("Version"), "back").c_str(), nullptr, ImGuiWindowFlags_AlwaysAutoResize)) {
     if (closeWindows_) {
       ImGui::CloseCurrentPopup();
     }
     const std::string v = FolderVersionOf(layout_.previous);
-    Heading(("Start version " + v + " next time?").c_str());
+    Heading(Fmt(Tr("Start version %s next time?"), v.c_str()).c_str());
     ImGui::PushTextWrapPos(wrap);
-    ImGui::TextUnformatted(("Version " + v + " starts the next time you open " + game_.title + ". Version " +
-                            FolderVersionOf(layout_.current) + " stays installed, so you can switch back the same "
-                            "way. Your saves, settings and mods stay as they are.")
+    ImGui::TextUnformatted(Fmt(Tr("Version %s starts the next time you open %s. Version %s stays installed, so you can "
+                                  "switch back the same way. Your saves, settings and mods stay as they are."),
+                               v.c_str(), game_.title.c_str(), FolderVersionOf(layout_.current).c_str())
                                .c_str());
     ImGui::PopTextWrapPos();
     ImGui::Spacing();
-    if (ImGui::Button(("Use version " + v).c_str())) {
+    if (ImGui::Button(Lbl(Fmt(Tr("Use version %s"), v.c_str()).c_str(), "usever").c_str())) {
       std::string error;
       if (!GoBackVersion(error)) {
-        versionNote_ = "That didn't work: " + error + ".";
+        versionNote_ = Fmt(Tr("That didn't work: %s."), error.c_str());
       }
       ImGui::CloseCurrentPopup();
     }
     ImGui::SameLine();
-    if (ImGui::Button("Cancel")) {
+    if (ImGui::Button(Lbl(Tr("Cancel"), "Cancel").c_str()) || BackPressed()) {
       ImGui::CloseCurrentPopup();
     }
     ImGui::EndPopup();
@@ -2154,6 +2348,54 @@ bool App::DoStep(const std::string& step) {
       controls_.StartListening(controls_.Port(), static_cast<size_t>(*input), false, false);
     }
     controls_.FeedPadButton(registry_, button->code);
+  } else if (verb == "padmode") {
+    SetController(Lower(arg) == "on");
+  } else if (verb == "padtype") {
+    using D = engine::controls::Device;
+    const std::string t = Lower(arg);
+    padIn_.SetDevice(t == "ps" || t == "playstation" ? D::PlayStation : t == "switch" ? D::Switch : t == "generic" ? D::Generic : D::Xbox);
+  } else if (verb == "pad") {
+    using B = pad::Btn;
+    SetController(true);
+    std::string names = arg;
+    int times = 1;
+    if (const size_t c = arg.rfind(':'); c != std::string::npos) {
+      names = arg.substr(0, c);
+      times = std::max(1, std::atoi(arg.c_str() + c + 1));
+    }
+    static const std::pair<const char*, B> kNames[] = {
+        {"up", B::Up}, {"down", B::Down}, {"left", B::Left}, {"right", B::Right}, {"a", B::Confirm}, {"b", B::Cancel},
+        {"x", B::X},   {"y", B::Y},       {"lb", B::LB},     {"rb", B::RB},       {"lt", B::LT},     {"rt", B::RT},
+        {"start", B::Start}, {"back", B::Back}};
+    for (int i = 0; i < times; i++) {
+      for (const std::string& name : Split(Lower(names), '+')) {
+        bool found = false;
+        for (const auto& [n, b] : kNames) {
+          if (name == n) {
+            padQueue_.push_back(b);
+            found = true;
+          }
+        }
+        if (!found) {
+          Log("no such controller button: " + name);
+          return false;
+        }
+      }
+    }
+  } else if (verb == "type") {
+    std::string text;
+    for (size_t i = 0; i < arg.size(); i++) {
+      if (arg[i] == '\\' && i + 1 < arg.size() && arg[i + 1] == 'n') {
+        text += '\n';
+        i++;
+      } else {
+        text += arg[i];
+      }
+    }
+    osk_.Type(text);
+  } else if (verb == "padwhere") {
+    Log("pad focus: " + pad::FocusInfo() + (files_.IsOpen() ? "; file browser in " + files_.Where() : std::string()) +
+        (osk_.Open() ? "; keyboard open" : "") + "; play button 0x" + HexId(playId_) + "; controller mode " + (controller_ ? "on" : "off"));
   } else if (verb == "port") {
     const int port = std::atoi(arg.c_str());
     if (port < 1 || port > 4) {
@@ -2184,7 +2426,7 @@ bool App::DoStep(const std::string& step) {
       Log("expected size:<width>x<height>");
       return false;
     }
-    SDL_SetWindowSize(window_, static_cast<int>(w * scale_), static_cast<int>(h * scale_));
+    SDL_SetWindowSize(window_, static_cast<int>(w * baseScale_), static_cast<int>(h * baseScale_));
   } else if (verb == "report") {
     page_ = Page::Reports;
     LookAtReports(true);
@@ -2255,7 +2497,9 @@ bool App::DoStep(const std::string& step) {
     return false;
   } else if (verb == "slot" || verb == "openslot" || verb == "showbackups" || verb == "newslot" ||
              verb == "renameslot" || verb == "dupslot" || verb == "deleteslot" || verb == "importslot" ||
-             verb == "exportslot") {
+             verb == "exportslot" || verb == "importfind" || verb == "importpick" || verb == "importconfirm" ||
+             verb == "importcancel" || verb == "tradefile" || verb == "tradepick" || verb == "tradeconfirm" ||
+             verb == "monsfile" || verb == "monspick" || verb == "monsconfirm") {
     page_ = Page::Save;
     if (!SlotsOn()) {
       Log("saves: this run has one memory card folder only (no list of saves)");
@@ -2287,6 +2531,81 @@ bool App::DoStep(const std::string& step) {
         return false;
       }
       backupsShown_ = Lower(arg) != "off";
+      return true;
+    }
+    if (verb == "monsfile") {
+      LookAtSlots(true);
+      if (OpenSlot() == nullptr) {
+        Log("mons: no save is open (openslot:<n> first)");
+        return false;
+      }
+      return MonsPick(arg);
+    }
+    if (verb == "monspick") {
+      if (!monsHave_) {
+        Log("mons: monspick after monsfile");
+        return false;
+      }
+      std::fill(monsPicked_.begin(), monsPicked_.end(), 0);
+      if (Lower(arg) == "all") {
+        for (size_t i = 0; i < monsView_.rows.size(); i++) {
+          monsPicked_[i] = monsView_.rows[i].problem.empty() ? 1 : 0;
+        }
+        return true;
+      }
+      size_t at = 0;
+      while (at < arg.size()) {
+        const size_t comma = arg.find(',', at);
+        const int n = std::atoi(arg.substr(at, comma == std::string::npos ? std::string::npos : comma - at).c_str());
+        if (n >= 1 && n <= static_cast<int>(monsPicked_.size())) {
+          monsPicked_[static_cast<size_t>(n - 1)] = 1;
+        }
+        if (comma == std::string::npos) {
+          break;
+        }
+        at = comma + 1;
+      }
+      return true;
+    }
+    if (verb == "monsconfirm") {
+      return MonsConfirm();
+    }
+    if (verb == "tradefile") {
+      LookAtSlots(true);
+      if (OpenSlot() == nullptr) {
+        Log("trade: no save is open (openslot:<n> first)");
+        return false;
+      }
+      tradeFor_ = OpenSlot()->id;
+      return TradePick(arg);
+    }
+    if (verb == "tradepick") {
+      const size_t comma = arg.find(',');
+      if (comma == std::string::npos || !tradeHave_) {
+        Log("trade: tradepick:<yours>,<theirs> after tradefile");
+        return false;
+      }
+      tradeMine_ = std::atoi(arg.substr(0, comma).c_str()) - 1;
+      tradeTheirs_ = std::atoi(arg.substr(comma + 1).c_str()) - 1;
+      return true;
+    }
+    if (verb == "tradeconfirm") {
+      return TradeConfirm();
+    }
+    if (verb == "importfind") {
+      ImportFind();
+      return true;
+    }
+    if (verb == "importpick") {
+      return ImportPick(arg);
+    }
+    if (verb == "importconfirm") {
+      return ImportConfirm();
+    }
+    if (verb == "importcancel") {
+      importOpen_ = false;
+      importSel_ = -1;
+      importHaveFile_ = false;
       return true;
     }
     return verb == "newslot"      ? NewSlot(arg)
@@ -2378,6 +2697,10 @@ void App::RunScript() {
   if (step_ >= script_.size() && waitFor_.empty()) {
     return;
   }
+  if (!padQueue_.empty() || padIn_.AnyDown()) {
+    framesSinceStep_ = 0;
+    return;
+  }
   if (!waitFor_.empty()) {
     if (waitFor_ == "disc" && (bg_.busy || DiscPath().empty())) {
       return;
@@ -2390,6 +2713,9 @@ void App::RunScript() {
       if (!OpenSummary(shown) || openRead_.busy || openReadAgain_) {
         return;
       }
+    }
+    if (waitFor_ == "import" && importScan_.busy) {
+      return;
     }
     if (waitFor_ == "pictures" && (bg_.drawing || iconShown_ != bg_.iconVersion)) {
       return;
@@ -2425,6 +2751,237 @@ void App::RunScript() {
   if (step_ >= script_.size() && waitFor_.empty() && !gameRunning_ && shotFile_.empty()) {
     Log("script done");
   }
+}
+
+std::vector<pad::PadInfo> App::PadInfos() const {
+  std::vector<pad::PadInfo> out;
+  for (SDL_Gamepad* p : pads_) {
+    out.push_back({p, DeviceOf(p)});
+  }
+  return out;
+}
+
+void App::SetController(bool on) {
+  if (on == controller_) {
+    return;
+  }
+  controller_ = on;
+  rescale_ = true;
+  focusPage_ = on;
+  Log(std::string("controller mode ") + (on ? "on" : "off"));
+}
+
+void App::ApplyScale() {
+  rescale_ = false;
+  scale_ = baseScale_ * (controller_ ? kControllerScale : 1.0f);
+  ImGuiIO& io = ImGui::GetIO();
+  ImGui_ImplSDLRenderer3_DestroyDeviceObjects();
+  io.Fonts->Clear();
+  fonts_ = LoadFonts(scale_);
+  options_.headingFont = fonts_.heading;
+  ApplyStyle(scale_);
+}
+
+void App::BrowseFor(pad::FileBrowser::Mode mode, SDL_DialogFileCallback callback, void* user,
+                    const SDL_DialogFileFilter* filters, int count, const char* start) {
+  pad::FileBrowser::Request req;
+  req.mode = mode;
+  req.title = mode == pad::FileBrowser::Mode::SaveFile ? "Save as" : "Choose a file";
+  for (int i = 0; i < count; i++) {
+    pad::FileFilter f;
+    f.name = filters[i].name != nullptr ? filters[i].name : "";
+    for (const std::string& ext : Split(filters[i].pattern != nullptr ? filters[i].pattern : "*", ';')) {
+      if (ext == "*") {
+        f.exts.clear();
+        break;
+      }
+      if (!ext.empty()) {
+        f.exts.push_back(Lower(ext));
+      }
+    }
+    req.filters.push_back(f);
+  }
+  if (start != nullptr && *start != 0) {
+    req.start = PathOf(start);
+  }
+  Log(std::string("file browser: ") + req.title + (start != nullptr ? std::string(" from ") + start : std::string()));
+  files_.Open(req, [callback, user](const std::string& result) {
+    if (result.empty()) {
+      const char* none[1] = {nullptr};
+      callback(user, none, -1);
+    } else {
+      const char* one[2] = {result.c_str(), nullptr};
+      callback(user, one, 0);
+    }
+  });
+}
+
+void App::ShowOpenDialog(SDL_DialogFileCallback callback, void* user, SDL_Window* window,
+                         const SDL_DialogFileFilter* filters, int count, const char* start, bool many) {
+  if (!controller_) {
+    SDL_ShowOpenFileDialog(callback, user, window, filters, count, start, many);
+    return;
+  }
+  BrowseFor(pad::FileBrowser::Mode::OpenFile, callback, user, filters, count, start);
+}
+
+void App::ShowSaveDialog(SDL_DialogFileCallback callback, void* user, SDL_Window* window,
+                         const SDL_DialogFileFilter* filters, int count, const char* start) {
+  if (!controller_) {
+    SDL_ShowSaveFileDialog(callback, user, window, filters, count, start);
+    return;
+  }
+  BrowseFor(pad::FileBrowser::Mode::SaveFile, callback, user, filters, count, start);
+}
+
+void App::PadShortcuts() {
+  using pad::Btn;
+  if (!controller_ || osk_.Open() || files_.IsOpen() || controls_.Listening() || ImGui::IsAnyItemActive() ||
+      ImGui::IsPopupOpen(0u, ImGuiPopupFlags_AnyPopupId | ImGuiPopupFlags_AnyPopupLevel)) {
+    return;
+  }
+  int delta = padIn_.Pressed(Btn::RB) ? 1 : padIn_.Pressed(Btn::LB) ? -1 : 0;
+  if (delta != 0) {
+    std::vector<Page> visible;
+    for (int p = 0; p < static_cast<int>(Page::Count); p++) {
+      if ((static_cast<Page>(p) == Page::Reports && game_.reportsFolder.empty()) ||
+          (static_cast<Page>(p) == Page::Extra && game_.extra.sources.empty())) {
+        continue;
+      }
+      visible.push_back(static_cast<Page>(p));
+    }
+    const int n = static_cast<int>(visible.size());
+    int at = 0;
+    for (int i = 0; i < n; i++) {
+      if (visible[static_cast<size_t>(i)] == page_) {
+        at = i;
+      }
+    }
+    page_ = visible[static_cast<size_t>((at + delta + n) % n)];
+    controls_.Cancel();
+    focusPage_ = true;
+    Log(std::string("pad: page ") + kPageIds[static_cast<int>(page_)]);
+    return;
+  }
+  delta = padIn_.Pressed(Btn::RT) ? 1 : padIn_.Pressed(Btn::LT) ? -1 : 0;
+  if (delta != 0) {
+    if (page_ == Page::Settings && !tabIds_.empty()) {
+      size_t at = 0;
+      for (size_t i = 0; i < tabIds_.size(); i++) {
+        if (tabIds_[i] == curTab_) {
+          at = i;
+        }
+      }
+      const int n = static_cast<int>(tabIds_.size());
+      wantTab_ = tabIds_[static_cast<size_t>((static_cast<int>(at) + delta + n) % n)];
+      Log("pad: tab " + wantTab_);
+    } else if (page_ == Page::Controls) {
+      controls_.SetPort((controls_.Port() + delta + 4) % 4);
+      Log("pad: controller tab " + std::to_string(controls_.Port() + 1));
+    }
+  }
+  if (padIn_.Pressed(Btn::Start)) {
+    askMenu_ = true;
+  }
+}
+
+std::vector<pad::Prompt> App::CurrentPrompts() {
+  using pad::Btn;
+  if (files_.IsOpen()) {
+    return files_.Prompts();
+  }
+  std::vector<pad::Prompt> p;
+  if (controls_.Listening()) {
+    return p;
+  }
+  const bool popup = ImGui::IsPopupOpen(0u, ImGuiPopupFlags_AnyPopupId | ImGuiPopupFlags_AnyPopupLevel);
+  if (ImGui::IsAnyItemActive()) {
+    p.push_back({Btn::Left, "Change"});
+    p.push_back({Btn::Confirm, "Done"});
+    return p;
+  }
+  p.push_back({Btn::Up, "Move"});
+  p.push_back({Btn::Confirm, "Select"});
+  if (popup) {
+    p.push_back({Btn::Cancel, "Back"});
+    return p;
+  }
+  p.push_back({Btn::Cancel, "To the pages"});
+  p.push_back({Btn::LB, ""});
+  p.push_back({Btn::RB, "Page"});
+  if (page_ == Page::Settings || page_ == Page::Controls) {
+    p.push_back({Btn::LT, ""});
+    p.push_back({Btn::RT, "Tab"});
+  }
+  p.push_back({Btn::Start, "Menu"});
+  return p;
+}
+
+void App::DrawFileBrowser() {
+  files_.Draw(scale_, fonts_.heading, fonts_.caption, padIn_, controller_);
+}
+
+void App::DrawPadUi() {
+  if (!controller_) {
+    return;
+  }
+  if (askMenu_) {
+    ImGui::OpenPopup("Menu##launcher");
+    askMenu_ = false;
+  }
+  ImGui::SetNextWindowPos(ImGui::GetMainViewport()->GetCenter(), ImGuiCond_Appearing, ImVec2(0.5f, 0.5f));
+  if (ImGui::BeginPopupModal("Menu##launcher", nullptr, ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoTitleBar)) {
+    Heading("Launcher");
+    ImGui::Spacing();
+    const ImVec2 big(320 * scale_, 0);
+    if (ImGui::Button("Back to the launcher", big) || BackPressed()) {
+      ImGui::CloseCurrentPopup();
+    }
+    ImGui::SetItemDefaultFocus();
+    const bool canPlay = playWhy_.empty() && !gameRunning_ && !playWhenDrawn_;
+    if (!canPlay) {
+      ImGui::BeginDisabled();
+    }
+    if (ImGui::Button("Play", big)) {
+      ImGui::CloseCurrentPopup();
+      Play(false);
+    }
+    if (!canPlay) {
+      ImGui::EndDisabled();
+    }
+    if (ImGui::Button("Quit the launcher", big)) {
+      ImGui::CloseCurrentPopup();
+      quit_ = true;
+    }
+    ImGui::EndPopup();
+  }
+  if (!sessionOpen_) {
+    DrawFileBrowser();
+  }
+  const ImGuiViewport* vp = ImGui::GetMainViewport();
+  ImDrawList* dl = ImGui::GetForegroundDrawList();
+  if (osk_.Open()) {
+    osk_.Draw(scale_, fonts_.nav, fonts_.caption, padIn_.Device());
+    return;
+  }
+  const float h = promptH_;
+  const ImVec2 a(vp->WorkPos.x, vp->WorkPos.y + vp->WorkSize.y - h), b(vp->WorkPos.x + vp->WorkSize.x, vp->WorkPos.y + vp->WorkSize.y);
+  dl->AddRectFilled(a, b, U32(Hex(0x0C0714), 0.96f));
+  dl->AddLine(a, ImVec2(b.x, a.y), U32(kLine));
+  ImFont* font = fonts_.caption;
+  if (controls_.Listening()) {
+    const char* text = "Press the new button now (a key needs a keyboard). It gives up after a few seconds.";
+    const ImVec2 ts = font->CalcTextSizeA(font->FontSize, FLT_MAX, 0, text);
+    dl->AddText(font, font->FontSize, ImVec2(a.x + 30 * scale_, a.y + (h - ts.y) * 0.5f), U32(kBusy), text);
+    return;
+  }
+  const std::vector<pad::Prompt> prompts = CurrentPrompts();
+  const float size = font->FontSize * 1.45f;
+  pad::DrawPrompts(dl, ImVec2(a.x + 30 * scale_, a.y + (h - size) * 0.5f), vp->WorkSize.x, prompts, padIn_.Device(), font,
+                   scale_, U32(kText), U32(kDim));
+  const char* tag = "Controller mode";
+  const ImVec2 ts = font->CalcTextSizeA(font->FontSize, FLT_MAX, 0, tag);
+  dl->AddText(font, font->FontSize, ImVec2(b.x - 30 * scale_ - ts.x, a.y + (h - ts.y) * 0.5f), U32(kFaint), tag);
 }
 
 void App::Screenshot(const std::string& file) {
@@ -2464,7 +3021,7 @@ void App::DrawHeader() {
   dl->AddText(fonts_.title, titleH, ImVec2(x, top), U32(kText), game_.title.c_str());
   dl->AddText(fonts_.caption, subH, ImVec2(x + 1, top + titleH + 2 * scale_), U32(kDim), game_.subtitle.c_str());
 
-  const std::string pill = std::string(ui::PresetName(registry_.CurrentPreset())) + " preset";
+  const std::string pill = Fmt(Tr("%s preset"), Tr(ui::PresetName(registry_.CurrentPreset())));
   const ImVec2 ts = fonts_.nav->CalcTextSizeA(fonts_.nav->FontSize, FLT_MAX, 0, pill.c_str());
   const float ph = ts.y + 10 * scale_, pw = ts.x + 26 * scale_;
   const ImVec2 pp(b.x - pad - pw, a.y + (height - ph) * 0.5f);
@@ -2481,9 +3038,17 @@ void App::DrawHeader() {
 
 void App::DrawNav(float height) {
   ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(10 * scale_, 12 * scale_));
-  ImGui::BeginChild("##nav", ImVec2(186 * scale_, height), ImGuiChildFlags_Borders | ImGuiChildFlags_AlwaysUseWindowPadding);
+  float navWidth = 186 * scale_;
+  ImGui::PushFont(fonts_.nav);
+  for (int p = 0; p < static_cast<int>(Page::Count); p++) {
+    navWidth = std::max(navWidth, ImGui::CalcTextSize(PageName(p)).x + (14 + 18 + 13 + 14 + 20) * scale_ +
+                                      ImGui::GetStyle().ScrollbarSize);
+  }
+  ImGui::PopFont();
+  ImGui::BeginChild("##nav", ImVec2(navWidth, height), ImGuiChildFlags_Borders | ImGuiChildFlags_AlwaysUseWindowPadding | ImGuiChildFlags_NavFlattened);
   ImDrawList* dl = ImGui::GetWindowDrawList();
-  const float rowH = 44 * scale_, glyph = 18 * scale_;
+  const float rowH = (controller_ ? 38 : 44) * scale_, glyph = 18 * scale_;
+  bool inNav = false;
   for (int p = 0; p < static_cast<int>(Page::Count); p++) {
     if (static_cast<Page>(p) == Page::Reports && game_.reportsFolder.empty()) {
       continue;
@@ -2492,14 +3057,25 @@ void App::DrawNav(float height) {
       continue;
     }
     ImGui::PushID(p);
+    ImGui::PushItemFlag(ImGuiItemFlags_NoNav, !focusInNav_ && !focusPage_);
     const ImVec2 pos = ImGui::GetCursorScreenPos();
     const float w = ImGui::GetContentRegionAvail().x;
     const bool selected = page_ == static_cast<Page>(p);
-    if (ImGui::InvisibleButton("##page", ImVec2(w, rowH))) {
+    if (ImGui::InvisibleButton("##page", ImVec2(w, rowH), ImGuiButtonFlags_EnableNav)) {
       page_ = static_cast<Page>(p);
       controls_.Cancel();
+      enterPage_ = controller_;
     }
-    const bool hovered = ImGui::IsItemHovered();
+    if (focusPage_ && selected && !ImGui::IsPopupOpen(0u, ImGuiPopupFlags_AnyPopupId | ImGuiPopupFlags_AnyPopupLevel)) {
+      pad::FocusLastItem();
+      ImGui::SetScrollHereY(0.5f);
+      focusPage_ = false;
+    }
+    const bool hovered = Hot();
+    inNav |= ImGui::IsItemFocused();
+    if (ImGui::GetIO().NavVisible && ImGui::IsItemFocused()) {
+      dl->AddRect(pos, ImVec2(pos.x + w, pos.y + rowH), U32(kAccentHover), 8 * scale_, 0, 2 * scale_);
+    }
     const ImVec2 end(pos.x + w, pos.y + rowH);
     if (selected) {
       dl->AddRectFilled(pos, end, U32(Hex(0x2E2350)), 8 * scale_);
@@ -2513,10 +3089,34 @@ void App::DrawNav(float height) {
     DrawGlyph(dl, GlyphOf(p), ImVec2(pos.x + 14 * scale_, pos.y + (rowH - glyph) * 0.5f), glyph, glyphInk);
     dl->AddText(fonts_.nav, fonts_.nav->FontSize,
                 ImVec2(pos.x + 14 * scale_ + glyph + 13 * scale_, pos.y + (rowH - fonts_.nav->FontSize) * 0.5f), ink,
-                kPageNames[p]);
+                PageName(p));
     ImGui::Dummy(ImVec2(0, 2 * scale_));
+    ImGui::PopItemFlag();
     ImGui::PopID();
   }
+  if (controller_) {
+    ImGui::PushID("quit");
+    ImGui::PushItemFlag(ImGuiItemFlags_NoNav, !focusInNav_ && !focusPage_);
+    const ImVec2 pos = ImGui::GetCursorScreenPos();
+    const float w = ImGui::GetContentRegionAvail().x;
+    if (ImGui::InvisibleButton("##quit", ImVec2(w, rowH), ImGuiButtonFlags_EnableNav)) {
+      askMenu_ = true;
+    }
+    inNav |= ImGui::IsItemFocused();
+    const bool hot = Hot();
+    if (hot) {
+      dl->AddRectFilled(pos, ImVec2(pos.x + w, pos.y + rowH), U32(Hex(0x241B39)), 8 * scale_);
+    }
+    if (ImGui::GetIO().NavVisible && ImGui::IsItemFocused()) {
+      dl->AddRect(pos, ImVec2(pos.x + w, pos.y + rowH), U32(kAccentHover), 8 * scale_, 0, 2 * scale_);
+    }
+    dl->AddText(fonts_.nav, fonts_.nav->FontSize,
+                ImVec2(pos.x + 14 * scale_ + glyph + 13 * scale_, pos.y + (rowH - fonts_.nav->FontSize) * 0.5f),
+                U32(hot ? kText : kDim), "Quit...");
+    ImGui::PopItemFlag();
+    ImGui::PopID();
+  }
+  focusInNav_ = inNav;
   ImGui::EndChild();
   ImGui::PopStyleVar();
 }
@@ -2594,7 +3194,9 @@ void App::ExtraLook(int index) {
     const std::string version =
         found ? extra::QueryVersion(converter, game_.settingsFolder / "extra_assets" / PathOf(src.id + "_version.txt"), 5000)
               : std::string();
-    const extra::Status status = extra::ComputeStatus(ExtraFolder(src), src.manifestId, found, version);
+    const extra::Status status = extra::ComputeStatus(ExtraFolder(src), src.manifestId, found, version, src.modelsFolder);
+    const std::vector<std::string> contents =
+        src.contentsFile.empty() ? std::vector<std::string>() : extra::ListNames(ExtraFolder(src) / PathOf(src.contentsFile));
     extra::SecondStatus second;
     if (!src.secondFolder.empty()) {
       second = extra::ComputeSecondStatus(ExtraFolder2(src), src.secondManifestFile, src.secondManifestId, src.secondVersion,
@@ -2604,6 +3206,7 @@ void App::ExtraLook(int index) {
       std::lock_guard<std::mutex> lock(state.mutex);
       state.status = status;
       state.second = second;
+      state.contents = contents;
       state.converterFound = found;
       state.looked = true;
     }
@@ -2619,7 +3222,7 @@ void App::ExtraSelectDisc(int index, const std::string& path) {
   const GameInfo::ExtraSource& src = game_.extra.sources[index];
   Log("extra disc (" + src.id + "): " + path);
   if (!registry_.SetText(src.discSetting, path)) {
-    playError_ = "This file name can't be used: " + path;
+    playError_ = Fmt(Tr("This file name can't be used: %s"), path.c_str());
     return;
   }
   SaveSettingsIfChanged();
@@ -2637,16 +3240,16 @@ void App::ExtraMake(int index) {
   fs::path converter;
   {
     std::lock_guard<std::mutex> lock(st.mutex);
-    if (!st.looked) why = "still looking at what is installed";
-    else if (!st.converterFound) why = "the converter isn't next to the game";
+    if (!st.looked) why = Tr("still looking at what is installed");
+    else if (!st.converterFound) why = Tr("the converter isn't next to the game");
     converter = extra::ConverterPath(src, game_.program.parent_path());
   }
-  if (why.empty() && gameDisc.empty()) why = "choose your own game disc on the Disc page first";
-  if (why.empty() && disc.empty()) why = "choose the " + src.name + " disc first";
-  if (why.empty() && st.check.state() != extra::DiscCheck::State::Good) why = "that disc isn't the right game (or is still being looked at)";
-  if (why.empty() && game_.playerFilesReadOnly) why = "this is a test run on the player's own files, which it never changes";
+  if (why.empty() && src.needsGameDisc && gameDisc.empty()) why = Tr("choose your own game disc on the Disc page first");
+  if (why.empty() && disc.empty()) why = Fmt(Tr("choose the %s disc first"), src.name.c_str());
+  if (why.empty() && st.check.state() != extra::DiscCheck::State::Good) why = Tr("that disc isn't the right game (or is still being looked at)");
+  if (why.empty() && game_.playerFilesReadOnly) why = Tr("this is a test run on the player's own files, which it never changes");
   if (!why.empty()) {
-    st.note = "Can't start: " + why + ".";
+    st.note = Fmt(Tr("Can't start: %s."), why.c_str());
     Log("extra: " + st.note);
     return;
   }
@@ -2704,9 +3307,9 @@ bool App::ExtraBusy() const {
 }
 
 void App::DrawExtraPage() {
-  PageTitle("Extra assets",
-            "Discs of other games that this port can borrow assets from. Your discs are only read; what is made from "
-            "them is made on this PC, kept in your own data folder (extra_assets) and never sent anywhere.");
+  PageTitle(Tr("Extra assets"),
+            Tr("Discs of other games that this port can borrow assets from. Your discs are only read; what is made from "
+               "them is made on this PC, kept in your own data folder (extra_assets) and never sent anywhere."));
   const auto& sources = game_.extra.sources;
   for (int i = 0; i < static_cast<int>(sources.size()) && i < static_cast<int>(extras_.size()); i++) {
     ExtraState& st = *extras_[i];
@@ -2715,17 +3318,19 @@ void App::DrawExtraPage() {
     BeginCard("##extra");
     extra::Status status;
     extra::SecondStatus second;
+    std::vector<std::string> contents;
     bool looked, converterFound;
     {
       std::lock_guard<std::mutex> lock(st.mutex);
       status = st.status;
       second = st.second;
+      contents = st.contents;
       looked = st.looked;
       converterFound = st.converterFound;
     }
-    Heading(src.provides.c_str());
+    Heading(Tr(src.provides).c_str());
     if (!looked) {
-      ImGui::TextColored(kBusy, "Looking...");
+      ImGui::TextColored(kBusy, "%s", Tr("Looking..."));
     } else {
       const ImVec4 colour = status.kind == extra::Status::Kind::Ready       ? kGood
                             : status.kind == extra::Status::Kind::OutOfDate ? kWarn
@@ -2733,6 +3338,11 @@ void App::DrawExtraPage() {
                                                                                    : kDim;
       ImGui::TextColored(colour, "%s", status.text.c_str());
       if (!status.detail.empty()) Dim(status.detail);
+      if (!contents.empty() && status.kind != extra::Status::Kind::NotSetUp && status.kind != extra::Status::Kind::ConverterMissing) {
+        std::string made;
+        for (const std::string& n : contents) made += (made.empty() ? "" : ", ") + n;
+        Dim("Made: " + made);
+      }
       if (!src.secondFolder.empty()) {
         ImGui::TextColored(second.kind == extra::SecondStatus::Kind::Ready       ? kGood
                            : second.kind == extra::SecondStatus::Kind::OutOfDate ? kWarn
@@ -2741,22 +3351,24 @@ void App::DrawExtraPage() {
         if (!second.detail.empty()) Dim(second.detail);
       }
     }
-    Dim("From a " + src.name + " disc. " + src.how);
+    Dim(Fmt(Tr("From a %s disc. %s"), src.name.c_str(), Tr(src.how).c_str()));
     ImGui::Dummy(ImVec2(0, 4 * scale_));
 
     std::string disc = registry_.Text(src.discSetting);
-    ImGui::TextColored(kDim, "%s disc image", src.name.c_str());
-    ImGui::SetNextItemWidth(-250 * scale_);
+    ImGui::TextColored(kDim, Tr("%s disc image"), src.name.c_str());
+    const std::string chooseDisc = Lbl(Tr("Choose disc..."), "Choose disc...");
+    ImGui::SetNextItemWidth(-std::max(250 * scale_, ImGui::CalcTextSize(Tr("Choose disc...")).x +
+                                                        ImGui::GetStyle().FramePadding.x * 2 +
+                                                        ImGui::GetStyle().ItemSpacing.x + 12 * scale_));
     ImGui::InputText("##disc", &disc, ImGuiInputTextFlags_ReadOnly);
     ImGui::SameLine();
-    if (ImGui::Button("Choose disc...")) {
-      static const SDL_DialogFileFilter kFilters[] = {
-          {"Disc images (ISO, RVZ, WBFS, CISO, GCZ...)", "iso;gcm;rvz;wia;gcz;ciso;wbfs"},
-          {"All files", "*"},
-      };
+    if (ImGui::Button(chooseDisc.c_str())) {
+      static SDL_DialogFileFilter kFilters[2];
+      kFilters[0] = {Tr("Disc images (ISO, RVZ, WBFS, CISO, GCZ...)"), "iso;gcm;rvz;wia;gcz;ciso;wbfs"};
+      kFilters[1] = {Tr("All files"), "*"};
       const std::string start = disc.empty() ? std::string() : Utf8(PathOf(disc).parent_path());
       extraPickedFor_ = i;
-      SDL_ShowOpenFileDialog(
+      ShowOpenDialog(
           [](void* user, const char* const* files, int) {
             App* app = static_cast<App*>(user);
             if (files != nullptr && files[0] != nullptr) {
@@ -2768,7 +3380,7 @@ void App::DrawExtraPage() {
           this, window_, kFilters, 2, start.empty() ? nullptr : start.c_str(), false);
     }
     switch (st.check.state()) {
-    case extra::DiscCheck::State::Checking: ImGui::TextColored(kBusy, "Looking at the disc image..."); break;
+    case extra::DiscCheck::State::Checking: ImGui::TextColored(kBusy, "%s", Tr("Looking at the disc image...")); break;
     case extra::DiscCheck::State::Good:
     case extra::DiscCheck::State::WrongGame:
     case extra::DiscCheck::State::Unreadable:
@@ -2777,31 +3389,40 @@ void App::DrawExtraPage() {
       ImGui::PopStyleColor();
       break;
     case extra::DiscCheck::State::None:
-      if (disc.empty()) Dim("No disc chosen yet.");
+      if (disc.empty()) Dim(Tr("No disc chosen yet."));
       break;
     }
     ImGui::Dummy(ImVec2(0, 4 * scale_));
 
     const bool running = st.job.Running();
     if (!running) {
-      if (ImGui::Button(src.makeLabel.c_str())) ExtraMake(i);
-      if (ImGui::IsItemHovered()) ImGui::SetTooltip("Needs your own game disc (Disc page) and this disc.");
+      if (ImGui::Button(Lbl(Tr(src.makeLabel).c_str(), src.makeLabel.c_str()).c_str())) ExtraMake(i);
+      if (Hot()) ImGui::SetTooltip("%s", Tr("Needs your own game disc (Disc page) and this disc."));
     } else {
-      if (ImGui::Button("Cancel")) ExtraCancel(i);
+      if (ImGui::Button(Lbl(Tr("Cancel"), "Cancel").c_str())) ExtraCancel(i);
     }
     if (running) {
       const extra::MakeJob::Snapshot snap = st.job.Get();
       const float fraction = snap.total > 0 ? static_cast<float>(static_cast<double>(snap.done) / static_cast<double>(snap.total)) : 0.0f;
       char label[160];
-      std::snprintf(label, sizeof label, snap.total > 0 ? "%llu / %llu  %s" : "starting...",
-                    static_cast<unsigned long long>(snap.done), static_cast<unsigned long long>(snap.total),
-                    snap.current.c_str());
+      if (snap.total > 0) {
+        std::snprintf(label, sizeof label, "%llu / %llu  %s", static_cast<unsigned long long>(snap.done),
+                      static_cast<unsigned long long>(snap.total), snap.current.c_str());
+      } else {
+        std::snprintf(label, sizeof label, "%s", Tr("starting..."));
+      }
       ImGui::ProgressBar(fraction, ImVec2(-1, 0), label);
-      Dim("This can take a while. The window stays usable; Cancel stops it and leaves nothing half-made.");
+      Dim(Tr("This can take a while. The window stays usable; Cancel stops it and leaves nothing half-made."));
     } else if (st.finishedShown) {
       const extra::MakeJob::Snapshot& r = st.last;
-      if (r.phase == extra::MakeJob::Phase::Done) {
-        ImGui::TextColored(kGood, "Done: %llu made, %llu kept as the game's own (%s). Turn it on with the setting below.",
+      if (r.phase == extra::MakeJob::Phase::Done && !src.doneText.empty()) {
+        ImGui::TextColored(kGood, Tr("Done (%s). %s"), HumanBytes(r.totalBytes).c_str(), Tr(src.doneText).c_str());
+      } else if (r.phase == extra::MakeJob::Phase::Done && src.switchSetting.empty()) {
+        ImGui::TextColored(kGood, Tr("Done: %llu made (%s)."), static_cast<unsigned long long>(r.converted),
+                           HumanBytes(r.totalBytes).c_str());
+        if (r.keptOriginal > 0) Dim(Fmt(Tr("%d could not be converted (see conversion_log.txt in the folder)."), static_cast<int>(r.keptOriginal)));
+      } else if (r.phase == extra::MakeJob::Phase::Done) {
+        ImGui::TextColored(kGood, Tr("Done: %llu made, %llu kept as the game's own (%s). Turn it on with the setting below."),
                            static_cast<unsigned long long>(r.converted), static_cast<unsigned long long>(r.keptOriginal),
                            HumanBytes(r.totalBytes).c_str());
       } else if (r.phase == extra::MakeJob::Phase::Cancelled) {
@@ -2817,14 +3438,17 @@ void App::DrawExtraPage() {
       ImGui::Dummy(ImVec2(0, 4 * scale_));
       bool on = registry_.Bool(src.switchSetting).Get();
       const es::Definition& def = registry_.Get(registry_.Find(src.switchSetting));
-      if (ImGui::Checkbox(("Use them in the game (setting: " + def.name + ")").c_str(), &on)) {
+      if (ImGui::Checkbox(Lbl(Fmt(Tr("Use them in the game (setting: %s)"), Tr(def.name).c_str()).c_str(),
+                              ("Use them in the game (setting: " + def.name + ")").c_str())
+                              .c_str(),
+                          &on)) {
         registry_.SetBool(src.switchSetting, on);
         SaveSettingsIfChanged();
       }
-      Dim("The same switch is in Settings and in the game's SETTINGS page. It is an improvement, so it is not part of "
-          "Original: turning it on here makes the preset Custom. The game reads it when it starts.");
+      Dim(Tr("The same switch is in Settings and in the game's SETTINGS page. It is an improvement, so it is not part of "
+             "Original: turning it on here makes the preset Custom. The game reads it when it starts."));
     }
-    if (ImGui::SmallButton("Look again")) {
+    if (ImGui::SmallButton(Lbl(Tr("Look again"), "Look again").c_str())) {
       ExtraLook(i);
       if (!disc.empty()) st.check.Start(src, disc, game_.extra);
     }
@@ -2833,24 +3457,45 @@ void App::DrawExtraPage() {
     ImGui::PopID();
     ImGui::Spacing();
   }
-  Dim("More discs (for example Pokemon Colosseum) can be added to this page later.");
+  if (!game_.textureGameId.empty()) {
+    const fs::path folder = game_.settingsFolder / "textures" / game_.textureGameId;
+    BeginCard("##hdtextures");
+    Heading(Tr("HD texture packs"));
+    Dim(Fmt(Tr("Texture packs made for Dolphin work here with the same file names. Each pack in %s is listed on the Mods page like a "
+               "mod: on from the start (it only changes pictures), and the order there says which pack wins when two replace the "
+               "same picture. A pack that lies in a folder of its own inside that folder is one entry; a mod can also carry a "
+               "\"textures\" folder. The plain GameCube game (the Original preset) never uses a pack. No pictures from the game "
+               "are shipped with the port."),
+            Utf8(folder).c_str()));
+    if (ImGui::SmallButton(Lbl(Tr("Open the textures folder"), "Open the textures folder").c_str())) {
+      std::error_code ec;
+      fs::create_directories(folder, ec);
+      OpenInSystem(folder);
+    }
+    ImGui::SameLine();
+    if (ImGui::SmallButton(Lbl(Tr("Go to the Mods page"), "Go to the Mods page").c_str())) page_ = Page::Mods;
+    EndCard();
+    ImGui::Spacing();
+  }
+  Dim(Tr("More discs can be added to this page later."));
 }
 
 void App::DrawDiscPage() {
-  PageTitle("Your disc", game_.discHelp);
+  PageTitle(Tr("Your disc"), Tr(game_.discHelp));
   std::string path = DiscPath();
-  ImGui::TextColored(kDim, "Disc image file");
-  ImGui::SetNextItemWidth(-250 * scale_);
+  ImGui::TextColored(kDim, "%s", Tr("Disc image file"));
+  const float checkW = ImGui::CalcTextSize(Tr("Check again")).x + ImGui::GetStyle().FramePadding.x * 2;
+  const float chooseW = ImGui::CalcTextSize(Tr("Choose...")).x + ImGui::GetStyle().FramePadding.x * 2;
+  ImGui::SetNextItemWidth(-std::max(250 * scale_, checkW + chooseW + ImGui::GetStyle().ItemSpacing.x * 3 + 12 * scale_));
   ImGui::InputText("##disc", &path, ImGuiInputTextFlags_ReadOnly);
   ImGui::SameLine();
-  if (ImGui::Button("Choose...")) {
-    static const SDL_DialogFileFilter kFilters[] = {
-        {"Disc images (ISO, RVZ, GCM, WIA, GCZ, CISO, WBFS)", "iso;gcm;rvz;wia;gcz;ciso;wbfs"},
-        {"All files", "*"},
-    };
+  if (ImGui::Button(Lbl(Tr("Choose..."), "Choose...").c_str())) {
+    static SDL_DialogFileFilter kFilters[2];
+    kFilters[0] = {Tr("Disc images (ISO, RVZ, GCM, WIA, GCZ, CISO, WBFS)"), "iso;gcm;rvz;wia;gcz;ciso;wbfs"};
+    kFilters[1] = {Tr("All files"), "*"};
     const std::string current = DiscPath();
     const std::string start = current.empty() ? std::string() : Utf8(PathOf(current).parent_path());
-    SDL_ShowOpenFileDialog(
+    ShowOpenDialog(
         [](void* user, const char* const* files, int) {
           App* app = static_cast<App*>(user);
           if (files != nullptr && files[0] != nullptr) {
@@ -2865,7 +3510,7 @@ void App::DrawDiscPage() {
   if (path.empty()) {
     ImGui::BeginDisabled();
   }
-  if (ImGui::Button("Check again")) {
+  if (ImGui::Button(Lbl(Tr("Check again"), "Check again").c_str())) {
     StartWorker(path);
   }
   if (path.empty()) {
@@ -2875,8 +3520,8 @@ void App::DrawDiscPage() {
 
   BeginCard("##status");
   if (path.empty()) {
-    ImGui::TextColored(kWarn, "No disc chosen yet");
-    Dim("Click \"Choose...\" and pick your disc image file. The launcher remembers it for next time.");
+    ImGui::TextColored(kWarn, "%s", Tr("No disc chosen yet"));
+    Dim(Tr("Click \"Choose...\" and pick your disc image file. The launcher remembers it for next time."));
   } else {
     bool have;
     DiscVerdict v;
@@ -2886,33 +3531,42 @@ void App::DrawDiscPage() {
       v = bg_.verdict;
     }
     if (!have) {
-      ImGui::TextColored(kBusy, "Checking your disc image...");
+      ImGui::TextColored(kBusy, "%s", Tr("Checking your disc image..."));
       const uint64_t total = bg_.total, done = bg_.done;
       if (total > 0) {
-        Dim("The first time a disc image is used, all of it is read to make sure it is complete and "
-            "unchanged. This takes a few seconds; after that it is remembered.");
+        Dim(Tr("The first time a disc image is used, all of it is read to make sure it is complete and "
+               "unchanged. This takes a few seconds; after that it is remembered."));
         ImGui::ProgressBar(static_cast<float>(static_cast<double>(done) / static_cast<double>(total)), ImVec2(-1, 0));
       }
     } else {
       ImGui::PushFont(fonts_.heading);
       switch (v.kind) {
-      case DiscVerdict::Kind::Good: ImGui::TextColored(kGood, "Ready to play"); break;
-      case DiscVerdict::Kind::Usable: ImGui::TextColored(kGood, "Ready to play (content not compared)"); break;
-      case DiscVerdict::Kind::Warning: ImGui::TextColored(kWarn, "Can be played, but read this first"); break;
-      case DiscVerdict::Kind::Problem: ImGui::TextColored(kBad, "This disc image can't be used"); break;
+      case DiscVerdict::Kind::Good: ImGui::TextColored(kGood, "%s", Tr("Ready to play")); break;
+      case DiscVerdict::Kind::Usable: ImGui::TextColored(kGood, "%s", Tr("Ready to play (content not compared)")); break;
+      case DiscVerdict::Kind::Warning: ImGui::TextColored(kWarn, "%s", Tr("Can be played, but read this first")); break;
+      case DiscVerdict::Kind::Problem: ImGui::TextColored(kBad, "%s", Tr("This disc image can't be used")); break;
       }
       ImGui::PopFont();
-      ImGui::TextWrapped("%s", v.text.c_str());
+      ImGui::TextWrapped("%s", Tr(v.text).c_str());
+      if (v.kind == DiscVerdict::Kind::Problem && game_.extra.otherVersion && game_.extra.otherVersion(v.gameId) &&
+          !game_.extra.sources.empty()) {
+        ImGui::Dummy(ImVec2(0, 4 * scale_));
+        if (ImGui::Button(Lbl(Tr("Go to the Extra assets page"), "Go to the Extra assets page").c_str())) page_ = Page::Extra;
+      }
       const uint32_t shadersTotal = bg_.shadersTotal;
       if (bg_.preparing && bg_.shadersRunning && v.kind != DiscVerdict::Kind::Problem) {
         ImGui::Dummy(ImVec2(0, 4 * scale_));
-        ImGui::TextColored(kBusy, "Preparing the game's shaders for this PC...");
-        Dim(playWhenDrawn_ ? "The game starts as soon as this is done."
-                           : "Done once (again after a graphics driver or game update), so places never wait for "
-                             "their graphics the first time you see them. You can look around meanwhile.");
+        ImGui::TextColored(kBusy, "%s", Tr("Preparing the game's shaders for this PC..."));
+        Dim(playWhenDrawn_ ? Tr("The game starts as soon as this is done.")
+                           : Tr("Done once (again after a graphics driver or game update), so places never wait for "
+                                "their graphics the first time you see them. You can look around meanwhile."));
         const uint32_t done = std::min(bg_.shadersDone.load(), shadersTotal);
         char label[64];
-        std::snprintf(label, sizeof label, shadersTotal > 0 ? "%u / %u" : "starting...", done, shadersTotal);
+        if (shadersTotal > 0) {
+          std::snprintf(label, sizeof label, "%u / %u", done, shadersTotal);
+        } else {
+          std::snprintf(label, sizeof label, "%s", Tr("starting..."));
+        }
         ImGui::ProgressBar(shadersTotal > 0 ? static_cast<float>(done) / static_cast<float>(shadersTotal) : 0.0f,
                            ImVec2(-1, 0), label);
       }
@@ -2920,7 +3574,7 @@ void App::DrawDiscPage() {
   }
   EndCard();
   ImGui::Spacing();
-  Dim("The game never changes your disc image: mods and settings are kept separately.");
+  Dim(Tr("The game never changes your disc image: mods and settings are kept separately."));
   if (game_.readDiscPictures || !game_.shortcutTarget.empty()) {
     ImGui::Dummy(ImVec2(0, 8 * scale_));
     DrawIconSection();
@@ -2932,7 +3586,7 @@ void App::DrawDiscPage() {
 }
 
 void App::DrawIconSection() {
-  Heading("Icon, background and shortcuts");
+  Heading(Tr("Icon, background and shortcuts"));
   BeginCard("##icon");
   std::string note;
   std::vector<std::pair<std::string, std::string>> choices;
@@ -2946,13 +3600,13 @@ void App::DrawIconSection() {
     }
   }
   const std::string selected = ResolvedIconId();
-  std::string chosenName = "the program's own icon";
+  std::string chosenName = Tr("the program's own icon");
   const bool icons = sys::HasIcons();
   if (icons) {
-    ImGui::TextUnformatted("Icon of the windows, the taskbar and the shortcuts:");
+    ImGui::TextUnformatted(Tr("Icon of the windows, the taskbar and the shortcuts:"));
   } else {
-    Dim("Choosing another icon for the windows and shortcuts isn't there on this system yet: they show the "
-        "program's own.");
+    Dim(Tr("Choosing another icon for the windows and shortcuts isn't there on this system yet: they show the "
+           "program's own."));
   }
   const float side = 56 * scale_, gap = 10 * scale_;
   int index = 0;
@@ -2969,10 +3623,10 @@ void App::DrawIconSection() {
       chosenName = name;
     }
     const ImVec2 p = ImGui::GetCursorScreenPos();
-    if (ImGui::InvisibleButton("##icon", ImVec2(side, side))) {
+    if (ImGui::InvisibleButton("##icon", ImVec2(side, side), ImGuiButtonFlags_EnableNav)) {
       registry_.SetText(kIconSetting, id);
     }
-    const bool hovered = ImGui::IsItemHovered();
+    const bool hovered = Hot();
     if (hovered) {
       ImGui::SetTooltip("%s", name.c_str());
     }
@@ -2989,18 +3643,18 @@ void App::DrawIconSection() {
     ImGui::PopID();
   };
   for (size_t i = 0; icons && i < game_.ownIcons.size(); i++) {
-    Tile(i < ownIcons_.size() ? ownIcons_[i] : nullptr, game_.ownIcons[i].id, game_.ownIcons[i].name);
+    Tile(i < ownIcons_.size() ? ownIcons_[i] : nullptr, game_.ownIcons[i].id, Tr(game_.ownIcons[i].name));
   }
   for (size_t i = 0; icons && i < choices.size(); i++) {
     Tile(i < choiceIcons_.size() ? choiceIcons_[i] : nullptr, choices[i].first, choices[i].second);
   }
   if (icons) {
     ImGui::Dummy(ImVec2(0, 2 * scale_));
-    ImGui::Text("In use: %s", chosenName.c_str());
+    ImGui::Text(Tr("In use: %s"), chosenName.c_str());
   }
   if (!grounds_.empty()) {
     ImGui::Dummy(ImVec2(0, 6 * scale_));
-    ImGui::TextUnformatted("Launcher background:");
+    ImGui::TextUnformatted(Tr("Launcher background:"));
     const int current = GroundIndex();
     const float gw = 92 * scale_, gh = 56 * scale_;
     for (int i = -1; i < static_cast<int>(grounds_.size()); i++) {
@@ -3012,12 +3666,12 @@ void App::DrawIconSection() {
       }
       ImGui::PushID(1000 + i);
       const ImVec2 p = ImGui::GetCursorScreenPos();
-      if (ImGui::InvisibleButton("##ground", ImVec2(gw, gh))) {
+      if (ImGui::InvisibleButton("##ground", ImVec2(gw, gh), ImGuiButtonFlags_EnableNav)) {
         registry_.SetText(kGroundSetting, i < 0 ? std::string("none") : grounds_[i].first);
       }
-      const bool hovered = ImGui::IsItemHovered();
+      const bool hovered = Hot();
       if (hovered) {
-        ImGui::SetTooltip("%s", i < 0 ? "None (plain)" : grounds_[i].second.c_str());
+        ImGui::SetTooltip("%s", i < 0 ? Tr("None (plain)") : grounds_[i].second.c_str());
       }
       ImDrawList* dl = ImGui::GetWindowDrawList();
       const ImVec2 q(p.x + gw, p.y + gh);
@@ -3025,8 +3679,8 @@ void App::DrawIconSection() {
       if (i >= 0 && i < static_cast<int>(groundTex_.size()) && groundTex_[i] != nullptr) {
         dl->AddImageRounded(TexId(groundTex_[i]), p, q, ImVec2(0, 0), ImVec2(1, 1), IM_COL32_WHITE, 7 * scale_);
       } else if (i < 0) {
-        const ImVec2 ts = ImGui::CalcTextSize("None");
-        dl->AddText(ImVec2(p.x + (gw - ts.x) / 2, p.y + (gh - ts.y) / 2), U32(kDim), "None");
+        const ImVec2 ts = ImGui::CalcTextSize(Tr("None"));
+        dl->AddText(ImVec2(p.x + std::max(0.0f, (gw - ts.x) / 2), p.y + (gh - ts.y) / 2), U32(kDim), Tr("None"));
       }
       if (i == current) {
         dl->AddRect(p, q, U32(kAccentHover), 7 * scale_, 0, 2.0f * scale_);
@@ -3038,22 +3692,24 @@ void App::DrawIconSection() {
   }
   if (icons) {
     Dim(have && !note.empty() ? note
-                              : "Once your disc has been checked, more icons are made from its pictures (only on this "
-                                "PC, in your data folder).");
+                              : std::string(Tr("Once your disc has been checked, more icons are made from its pictures "
+                                               "(only on this PC, in your data folder).")));
   } else if (grounds_.empty()) {
-    Dim("Once your disc has been checked, launcher backgrounds are made from its pictures (only on this PC, in "
-        "your data folder).");
+    Dim(Tr("Once your disc has been checked, launcher backgrounds are made from its pictures (only on this PC, in "
+           "your data folder)."));
   }
   ImGui::Dummy(ImVec2(0, 4 * scale_));
   if (!sys::ShortcutsHere()) {
-    Dim("There is no shortcut to make on this system: drag the Pokemon XD app to the Dock, or keep it in "
-        "Applications.");
+    Dim(Tr("There is no shortcut to make on this system: drag the Pokemon XD app to the Dock, or keep it in "
+           "Applications."));
   } else {
-    if (ImGui::Button((std::string("Create ") + sys::ProgramsFolderName() + " shortcut").c_str())) {
+    if (ImGui::Button(Lbl(Fmt(Tr("Create %s shortcut"), ProgramsName().c_str()).c_str(),
+                          (std::string("Create ") + sys::ProgramsFolderName() + " shortcut").c_str())
+                          .c_str())) {
       Shortcut(false);
     }
     ImGui::SameLine();
-    if (ImGui::Button("Create desktop shortcut")) {
+    if (ImGui::Button(Lbl(Tr("Create desktop shortcut"), "Create desktop shortcut").c_str())) {
       Shortcut(true);
     }
   }
@@ -3076,20 +3732,20 @@ void App::DrawNotOpenedWindow() {
   if (notOpened_.empty()) {
     return;
   }
-  if (!ImGui::IsPopupOpen("Couldn't open it")) {
-    ImGui::OpenPopup("Couldn't open it");
+  if (!ImGui::IsPopupOpen("###notopened")) {
+    ImGui::OpenPopup("###notopened");
   }
   ImGui::SetNextWindowPos(ImGui::GetMainViewport()->GetCenter(), ImGuiCond_Appearing, ImVec2(0.5f, 0.5f));
-  if (ImGui::BeginPopupModal("Couldn't open it", nullptr, ImGuiWindowFlags_AlwaysAutoResize)) {
-    ImGui::TextUnformatted("Your system didn't open this by itself. It is here:");
+  if (ImGui::BeginPopupModal(Lbl(Tr("Couldn't open it"), "notopened").c_str(), nullptr, ImGuiWindowFlags_AlwaysAutoResize)) {
+    ImGui::TextUnformatted(Tr("Your system didn't open this by itself. It is here:"));
     ImGui::PushTextWrapPos(ImGui::GetCursorPosX() + 560 * scale_);
     ImGui::TextColored(kText, "%s", notOpened_.c_str());
     ImGui::PopTextWrapPos();
-    if (ImGui::Button("Copy the path")) {
+    if (ImGui::Button(Lbl(Tr("Copy the path"), "Copy the path").c_str())) {
       SDL_SetClipboardText(notOpened_.c_str());
     }
     ImGui::SameLine();
-    if (ImGui::Button("OK") || closeWindows_) {
+    if (ImGui::Button(Lbl(Tr("OK"), "OK").c_str()) || closeWindows_ || BackPressed()) {
       notOpened_.clear();
       ImGui::CloseCurrentPopup();
     }
@@ -3098,8 +3754,8 @@ void App::DrawNotOpenedWindow() {
 }
 
 void App::DrawPresetPage() {
-  PageTitle("How do you want to play?", "Pick a preset. You can change single settings later on the Settings page.");
-  if (ImGui::Button("What's the difference?")) {
+  PageTitle(Tr("How do you want to play?"), Tr("Pick a preset. You can change single settings later on the Settings page."));
+  if (ImGui::Button(Lbl(Tr("What's the difference?"), "whatsdiff").c_str())) {
     askPreset_ = true;
   }
   ImGui::Spacing();
@@ -3108,35 +3764,40 @@ void App::DrawPresetPage() {
 
 void App::DrawSettingsPage() {
   ImGui::PushFont(fonts_.title);
-  ImGui::TextUnformatted("Settings");
+  ImGui::TextUnformatted(Tr("Settings"));
   ImGui::PopFont();
   const es::Preset preset = registry_.CurrentPreset();
-  std::string line = std::string("Preset: ") + ui::PresetName(preset) + ". ";
-  line += preset == es::Preset::Original ? "Changing a game setting switches to Custom; "
-                                           "volumes, window and controls never do."
-                                         : "Settings marked \"Changed\" are not as on the GameCube.";
+  const std::string line =
+      Fmt(preset == es::Preset::Original
+              ? Tr("Preset: %s. Changing a game setting switches to Custom; volumes, window and controls never do.")
+              : Tr("Preset: %s. Settings marked \"Changed\" are not as on the GameCube."),
+          Tr(ui::PresetName(preset)));
   Dim(line);
   ImGui::Spacing();
+  tabIds_.clear();
   if (ImGui::BeginTabBar("##cats")) {
     for (es::Category c : {es::Category::Video, es::Category::Audio, es::Category::Gameplay,
                            es::Category::Accessibility, es::Category::System}) {
       if (ui::VisibleSettings(registry_, c, options_).empty()) {
         continue;
       }
+      tabIds_.push_back(es::CategoryId(c));
       const bool select = !wantTab_.empty() && wantTab_ == es::CategoryId(c);
-      if (ImGui::BeginTabItem(es::CategoryName(c), nullptr, select ? ImGuiTabItemFlags_SetSelected : 0)) {
-        ImGui::BeginChild("##scroll", ImVec2(0, 0));
+      if (ImGui::BeginTabItem(Lbl(Tr(es::CategoryName(c)), es::CategoryName(c)).c_str(), nullptr,
+                              select ? ImGuiTabItemFlags_SetSelected : 0)) {
+        curTab_ = es::CategoryId(c);
+        ImGui::BeginChild("##scroll", ImVec2(0, 0), ImGuiChildFlags_NavFlattened);
         ui::DrawCategory(registry_, c, options_);
         ImGui::Spacing();
-        const std::string reset = std::string("Back to ") +
-                                  ui::PresetName(preset == es::Preset::Custom ? registry_.BasePreset() : preset) +
-                                  " on this page";
+        const char* baseName = ui::PresetName(preset == es::Preset::Custom ? registry_.BasePreset() : preset);
+        const std::string reset = Lbl(Fmt(Tr("Back to %s on this page"), Tr(baseName)).c_str(),
+                                      (std::string("Back to ") + baseName + " on this page").c_str());
         if (ImGui::Button(reset.c_str())) {
           ui::ResetCategory(registry_, c, options_);
         }
         if (!settingsNotes_.empty() && c == es::Category::System) {
           ImGui::Spacing();
-          Heading("Notes about your settings file");
+          Heading(Tr("Notes about your settings file"));
           for (const std::string& n : settingsNotes_) {
             ImGui::BulletText("%s", n.c_str());
           }
@@ -3190,34 +3851,34 @@ void App::FeedLiveInputs() {
 }
 
 void App::DrawControlsPage() {
-  PageTitle("Controls", "");
-  Dim("Which PC controller and which keys play each of the four GameCube controllers. Controls are yours in every "
-      "preset, Original too: they change how you press the buttons, never what the game does with them.");
+  PageTitle(Tr("Controls"), "");
+  Dim(Tr("Which PC controller and which keys play each of the four GameCube controllers. Controls are yours in every "
+         "preset, Original too: they change how you press the buttons, never what the game does with them."));
   ImGui::Spacing();
   FeedLiveInputs();
   controls_.DrawPortTabs(registry_, options_);
-  ImGui::BeginChild("##scroll", ImVec2(0, 0));
+  ImGui::BeginChild("##scroll", ImVec2(0, 0), ImGuiChildFlags_NavFlattened);
   const std::string n = std::to_string(controls_.Port() + 1);
   if (BeginCard("##ctl_pc")) {
-    Heading(("Controller " + n).c_str());
+    Heading(Fmt(Tr("Controller %s"), n.c_str()).c_str());
     controls_.DrawController(registry_, options_);
   }
   EndCard();
   ImGui::Spacing();
   if (BeginCard("##ctl_test")) {
-    Heading("Try it");
+    Heading(Tr("Try it"));
     controls_.DrawLiveTest(registry_, options_);
   }
   EndCard();
   ImGui::Spacing();
   if (BeginCard("##ctl_map")) {
-    Heading("Buttons");
+    Heading(Tr("Buttons"));
     controls_.DrawMapping(registry_, options_);
   }
   EndCard();
   ImGui::Spacing();
   if (BeginCard("##ctl_sticks")) {
-    Heading("Sticks and triggers");
+    Heading(Tr("Sticks and triggers"));
     controls_.DrawSticks(registry_, options_);
   }
   EndCard();
@@ -3226,7 +3887,7 @@ void App::DrawControlsPage() {
   if (!ui::VisibleSettings(registry_, es::Category::Controls, generic).empty()) {
     ImGui::Spacing();
     if (BeginCard("##ctl_all")) {
-      Heading("For every controller");
+      Heading(Tr("For every controller"));
       ui::DrawCategory(registry_, es::Category::Controls, generic);
     }
     EndCard();
@@ -3235,12 +3896,12 @@ void App::DrawControlsPage() {
 }
 
 void App::DrawModsPage() {
-  PageTitle("Mods", "");
-  Dim("Mods change the game's files (on top of your disc; the disc itself is never changed). A mod is only used "
-      "when it is switched on here. Further down the list wins when two mods change the same thing.");
+  PageTitle(Tr("Mods"), "");
+  Dim(Tr("Mods change the game's files (on top of your disc; the disc itself is never changed). A mod is only used "
+         "when it is switched on here. Further down the list wins when two mods change the same thing."));
   ImGui::Spacing();
   ImGui::AlignTextToFramePadding();
-  ImGui::TextUnformatted("Mod list:");
+  ImGui::TextUnformatted(Tr("Mod list:"));
   ImGui::SameLine();
   ImGui::SetNextItemWidth(220 * scale_);
   if (ImGui::BeginCombo("##profile", mods_.active.c_str())) {
@@ -3254,24 +3915,24 @@ void App::DrawModsPage() {
     ImGui::EndCombo();
   }
   ImGui::SameLine();
-  if (ImGui::Button("New list...")) {
+  if (ImGui::Button(Lbl(Tr("New list..."), "New list...").c_str())) {
     newProfile_.clear();
-    ImGui::OpenPopup("New mod list");
+    ImGui::OpenPopup("###newmodlist");
   }
   ImGui::SameLine();
-  if (ImGui::Button("Open the mods folder")) {
+  if (ImGui::Button(Lbl(Tr("Open the mods folder"), "Open the mods folder").c_str())) {
     std::error_code ec;
     fs::create_directories(game_.modsFolder, ec);
     OpenInSystem(game_.modsFolder);
   }
   ImGui::SameLine();
-  if (ImGui::Button("Look again")) {
+  if (ImGui::Button(Lbl(Tr("Look again"), "Look again").c_str())) {
     ReloadMods();
   }
-  if (ImGui::BeginPopupModal("New mod list", nullptr, ImGuiWindowFlags_AlwaysAutoResize)) {
-    ImGui::TextUnformatted("A name for the new list (for example \"randomizer run\"):");
+  if (ImGui::BeginPopupModal(Lbl(Tr("New mod list"), "newmodlist").c_str(), nullptr, ImGuiWindowFlags_AlwaysAutoResize)) {
+    ImGui::TextUnformatted(Tr("A name for the new list (for example \"randomizer run\"):"));
     ImGui::SetNextItemWidth(320 * scale_);
-    ImGui::InputText("##name", &newProfile_);
+    pad::InputText("##name", &newProfile_);
     bool usable = !newProfile_.empty() && newProfile_.find_first_of("[]=;#") == std::string::npos &&
                   newProfile_.front() != ' ' && newProfile_.back() != ' ';
     for (const em::ModList::Profile& p : mods_.profiles) {
@@ -3280,7 +3941,7 @@ void App::DrawModsPage() {
     if (!usable) {
       ImGui::BeginDisabled();
     }
-    if (ImGui::Button("Make it")) {
+    if (ImGui::Button(Lbl(Tr("Make it"), "Make it").c_str())) {
       mods_.active = newProfile_;
       mods_.Active();
       em::AddNewMods(mods_, found_);
@@ -3291,7 +3952,7 @@ void App::DrawModsPage() {
       ImGui::EndDisabled();
     }
     ImGui::SameLine();
-    if (ImGui::Button("Cancel")) {
+    if (ImGui::Button(Lbl(Tr("Cancel"), "Cancel").c_str()) || BackPressed()) {
       ImGui::CloseCurrentPopup();
     }
     ImGui::EndPopup();
@@ -3307,17 +3968,18 @@ void App::DrawModsPage() {
   }
   auto& list = mods_.Active().mods;
   if (list.empty()) {
-    ImGui::BeginChild("##none", ImVec2(0, 0), ImGuiChildFlags_Borders | ImGuiChildFlags_AutoResizeY);
-    ImGui::TextUnformatted("No mods yet.");
-    Dim("To add a mod, unpack it into its own folder inside the mods folder (\"Open the mods folder\"), then "
-        "click \"Look again\". Mods: " + Utf8(game_.modsFolder));
+    ImGui::BeginChild("##none", ImVec2(0, 0), ImGuiChildFlags_Borders | ImGuiChildFlags_AutoResizeY | ImGuiChildFlags_NavFlattened);
+    ImGui::TextUnformatted(Tr("No mods yet."));
+    Dim(Fmt(Tr("To add a mod, unpack it into its own folder inside the mods folder (\"Open the mods folder\"), then "
+               "click \"Look again\". Mods: %s"),
+            Utf8(game_.modsFolder).c_str()));
     ImGui::EndChild();
   } else if (ImGui::BeginTable("##mods", 4, ImGuiTableFlags_RowBg | ImGuiTableFlags_BordersInnerH |
                                                ImGuiTableFlags_PadOuterX)) {
-    ImGui::TableSetupColumn("On", ImGuiTableColumnFlags_WidthFixed);
-    ImGui::TableSetupColumn("Mod", ImGuiTableColumnFlags_WidthStretch, 3.0f);
-    ImGui::TableSetupColumn("Version, made by", ImGuiTableColumnFlags_WidthStretch, 1.2f);
-    ImGui::TableSetupColumn("Order", ImGuiTableColumnFlags_WidthFixed);
+    ImGui::TableSetupColumn(Lbl(Tr("On"), "On").c_str(), ImGuiTableColumnFlags_WidthFixed);
+    ImGui::TableSetupColumn(Lbl(Tr("Mod"), "Mod").c_str(), ImGuiTableColumnFlags_WidthStretch, 3.0f);
+    ImGui::TableSetupColumn(Lbl(Tr("Version, made by"), "Version, made by").c_str(), ImGuiTableColumnFlags_WidthStretch, 1.5f);
+    ImGui::TableSetupColumn(Lbl(Tr("Order"), "Order").c_str(), ImGuiTableColumnFlags_WidthFixed);
     ImGui::TableHeadersRow();
     int moveFrom = -1, moveTo = -1;
     for (int i = 0; i < static_cast<int>(list.size()); i++) {
@@ -3337,25 +3999,28 @@ void App::DrawModsPage() {
       ImGui::TableSetColumnIndex(1);
       ImGui::TextUnformatted(mod != nullptr && !mod->manifest.name.empty() ? mod->manifest.name.c_str() : id.c_str());
       if (mod == nullptr) {
-        ImGui::TextColored(kWarn, "Not in the mods folder any more (left in the list; it isn't used).");
+        ImGui::TextColored(kWarn, "%s", Tr("Not in the mods folder any more (left in the list; it isn't used)."));
       } else {
         if (!mod->manifest.description.empty()) {
           Dim(mod->manifest.description);
         }
         {
           const em::AppliesVerdict v = em::CheckApplies(*mod, game_.modLooks);
-          std::string when = std::string("Applies: ") + em::AppliesName(v.effective);
+          std::string when;
           if (v.Downgraded()) {
-            when += std::string(" (it says ") + em::AppliesName(v.claimed) + ", but " + v.reason + ")";
+            when = Fmt(Tr("Applies: %s (it says %s, but %s)"), Tr(em::AppliesName(v.effective)),
+                       Tr(em::AppliesName(v.claimed)), v.reason.c_str());
           } else if (v.effective == em::Applies::NewPlaythrough) {
-            when += " (chosen at New Game)";
+            when = Fmt(Tr("Applies: %s (chosen at New Game)"), Tr(em::AppliesName(v.effective)));
+          } else {
+            when = Fmt(Tr("Applies: %s"), Tr(em::AppliesName(v.effective)));
           }
           Dim(when);
         }
         if (!discGame.empty()) {
           const auto& games = mod->manifest.games;
           if (std::none_of(games.begin(), games.end(), [&](const std::string& g) { return Lower(g) == Lower(discGame); })) {
-            ImGui::TextColored(kWarn, "Made for another game or game version: it won't be used with this disc.");
+            ImGui::TextColored(kWarn, "%s", Tr("Made for another game or game version: it won't be used with this disc."));
           }
         }
       }
@@ -3404,16 +4069,16 @@ void App::DrawModsPage() {
     ImGui::PopStyleColor();
   }
   ImGui::Spacing();
-  Dim("The game checks the mods again when it starts (what they need, what they clash with) and tells you "
-      "about any problem.");
+  Dim(Tr("The game checks the mods again when it starts (what they need, what they clash with) and tells you "
+         "about any problem."));
 }
 
 void App::DrawSavePage() {
-  PageTitle(SlotsOn() ? "Your saves" : "Your save",
-            SlotsOn() ? "Your saves: which one the game loads, what is in each, and the backups the game keeps of it."
+  PageTitle(SlotsOn() ? Tr("Your saves") : Tr("Your save"),
+            SlotsOn() ? Tr("Your saves: which one the game loads, what is in each, and the backups the game keeps of it.")
             : game_.saveBackupsFolder.empty()
-                ? "What is saved on the game's memory card. Only shown here, never changed."
-                : "What is saved on the game's memory card, and the backups the game keeps of it.");
+                ? Tr("What is saved on the game's memory card. Only shown here, never changed.")
+                : Tr("What is saved on the game's memory card, and the backups the game keeps of it."));
   if (SlotsOn()) {
     DrawSlots();
     return;
@@ -3453,7 +4118,7 @@ void App::RestoreBackup() {
       }
       if (gameRunning_) {
         backupOk_ = false;
-        backupMessage_ = "Close the game first: it has the memory card open.";
+        backupMessage_ = Tr("Close the game first: it has the memory card open.");
         return;
       }
       std::string error;
@@ -3464,8 +4129,9 @@ void App::RestoreBackup() {
                                          : fs::path())
                                   : game_.cardFolder ? game_.cardFolder(b.card) : fs::path();
       backupOk_ = !card.empty() && bk::Restore(b, f.name, card, BackupsFolder(), bk::kKeep, error);
-      backupMessage_ = backupOk_ ? "Restored the backup of " + b.when + ". The save you had before is in the list too."
-                                 : (error.empty() ? std::string("This card's folder isn't known.") : error);
+      backupMessage_ = backupOk_ ? Fmt(Tr("Restored the backup of %s. The save you had before is in the list too."),
+                                       b.when.c_str())
+                                 : (error.empty() ? std::string(Tr("This card's folder isn't known.")) : error);
       Log("restore backup " + backupSel_ + ": " + backupMessage_);
       LookAtBackups(true);
       slotsLookedAt_ = 0;
@@ -3478,12 +4144,12 @@ void App::RestoreBackup() {
     }
   }
   backupOk_ = false;
-  backupMessage_ = "Choose a backup first.";
+  backupMessage_ = Tr("Choose a backup first.");
 }
 
 void App::DrawBackups(bool inBox) {
   LookAtBackups(false);
-  Heading("Backups");
+  Heading(Tr("Backups"));
   if (inBox) {
     size_t count = 0;
     for (const bk::Backup& b : backups_) {
@@ -3491,11 +4157,12 @@ void App::DrawBackups(bool inBox) {
     }
     ImGui::AlignTextToFramePadding();
     if (count == 0) {
-      Dim("None yet: the first one is made the next time the game saves over this save.");
+      Dim(Tr("None yet: the first one is made the next time the game saves over this save."));
     } else {
-      ImGui::Text("%d kept, newest %s", static_cast<int>(count), backups_.front().when.c_str());
+      ImGui::Text(Tr("%d kept, newest %s"), static_cast<int>(count), backups_.front().when.c_str());
       ImGui::SameLine();
-      if (ImGui::Button(backupsShown_ ? "Hide backups" : "Show backups")) {
+      if (ImGui::Button(backupsShown_ ? Lbl(Tr("Hide backups"), "Hide backups").c_str()
+                                      : Lbl(Tr("Show backups"), "Show backups").c_str())) {
         backupsShown_ = !backupsShown_;
       }
     }
@@ -3508,28 +4175,29 @@ void App::DrawBackups(bool inBox) {
       return;
     }
   }
-  Dim("Each time the game saves, it first keeps a copy of the save as it was (only when it changed). The newest " +
-      std::to_string(bk::kKeep) + " are kept. Restore puts one back on the memory card.");
-  if (ImGui::Button("Open folder")) {
+  Dim(Fmt(Tr("Each time the game saves, it first keeps a copy of the save as it was (only when it changed). The newest "
+             "%d are kept. Restore puts one back on the memory card."),
+          static_cast<int>(bk::kKeep)));
+  if (ImGui::Button(Lbl(Tr("Open folder"), "Open folder").c_str())) {
     std::error_code ec;
     fs::create_directories(BackupsFolder(), ec);
     OpenInSystem(BackupsFolder());
   }
   if (!inBox) {
     ImGui::SameLine();
-    if (ImGui::Button("Look again")) {
+    if (ImGui::Button(Lbl(Tr("Look again"), "Look again").c_str())) {
       LookAtBackups(true);
     }
   }
   bool restore = false;
   if (backups_.empty()) {
-    Dim("No backups yet: the first one is made the next time the game saves over an existing save.");
+    Dim(Tr("No backups yet: the first one is made the next time the game saves over an existing save."));
   } else if (ImGui::BeginTable("##backups", 5, ImGuiTableFlags_RowBg | ImGuiTableFlags_BordersInnerH |
                                                    ImGuiTableFlags_PadOuterX)) {
-    ImGui::TableSetupColumn("Backed up", ImGuiTableColumnFlags_WidthFixed);
-    ImGui::TableSetupColumn("Save", ImGuiTableColumnFlags_WidthStretch);
-    ImGui::TableSetupColumn("Card", ImGuiTableColumnFlags_WidthFixed);
-    ImGui::TableSetupColumn("Size", ImGuiTableColumnFlags_WidthFixed);
+    ImGui::TableSetupColumn(Lbl(Tr("Backed up"), "Backed up").c_str(), ImGuiTableColumnFlags_WidthFixed);
+    ImGui::TableSetupColumn(Lbl(Tr("Save"), "Save").c_str(), ImGuiTableColumnFlags_WidthStretch);
+    ImGui::TableSetupColumn(Lbl(Tr("Card"), "Card").c_str(), ImGuiTableColumnFlags_WidthFixed);
+    ImGui::TableSetupColumn(Lbl(Tr("Size"), "Size").c_str(), ImGuiTableColumnFlags_WidthFixed);
     ImGui::TableSetupColumn("", ImGuiTableColumnFlags_WidthFixed);
     ImGui::TableHeadersRow();
     for (const bk::Backup& b : backups_) {
@@ -3548,9 +4216,9 @@ void App::DrawBackups(bool inBox) {
         const std::string saved = bk::CardTimeText(f.savedAt);
         if (!saved.empty()) {
           ImGui::SameLine();
-          ImGui::TextColored(kDim, "(saved %s)", saved.c_str());
+          ImGui::TextColored(kDim, Tr("(saved %s)"), saved.c_str());
         }
-        if (ImGui::IsItemHovered()) {
+        if (Hot()) {
           ImGui::SetTooltip("%s", f.name.c_str());
         }
         ImGui::TableSetColumnIndex(2);
@@ -3561,25 +4229,27 @@ void App::DrawBackups(bool inBox) {
         if (gameRunning_) {
           ImGui::BeginDisabled();
         }
-        if (ImGui::SmallButton("Restore...")) {
+        if (ImGui::SmallButton(Lbl(Tr("Restore..."), "Restore...").c_str())) {
           backupSel_ = id;
           backupMessage_.clear();
-          ImGui::OpenPopup("Restore this backup?");
+          ImGui::OpenPopup("###restorebackup");
         }
         if (gameRunning_) {
           ImGui::EndDisabled();
         }
-        if (ImGui::BeginPopupModal("Restore this backup?", nullptr, ImGuiWindowFlags_AlwaysAutoResize)) {
-          ImGui::Text("Restore the backup of %s?", b.when.c_str());
-          Dim("This replaces your current save; the current one is backed up first.");
-          if (ImGui::Button("Restore it")) {
+        if (ImGui::BeginPopupModal(Lbl(Tr("Restore this backup?"), "restorebackup").c_str(), nullptr,
+                                   ImGuiWindowFlags_AlwaysAutoResize)) {
+          ImGui::Text(Tr("Restore the backup of %s?"), b.when.c_str());
+          Dim(Tr("This replaces your current save; the current one is backed up first."));
+          if (ImGui::Button(Lbl(Tr("Restore it"), "Restore it").c_str())) {
             ImGui::CloseCurrentPopup();
             restore = true;
           }
           ImGui::SameLine();
-          if (ImGui::Button("Cancel")) {
+          if (ImGui::Button(Lbl(Tr("Cancel"), "Cancel").c_str()) || BackPressed()) {
             ImGui::CloseCurrentPopup();
           }
+          ImGui::SetItemDefaultFocus();
           ImGui::EndPopup();
         }
         ImGui::PopID();
@@ -3591,14 +4261,14 @@ void App::DrawBackups(bool inBox) {
     RestoreBackup();
   }
   if (gameRunning_ && !backups_.empty()) {
-    Dim("Close the game to restore a backup (it has the memory card open).");
+    Dim(Tr("Close the game to restore a backup (it has the memory card open)."));
   }
   if (!backupMessage_.empty()) {
     ImGui::PushStyleColor(ImGuiCol_Text, backupOk_ ? kGood : kBad);
     ImGui::TextWrapped("%s", backupMessage_.c_str());
     ImGui::PopStyleColor();
   }
-  Dim("Backups folder: " + Utf8(BackupsFolder()));
+  Dim(Fmt(Tr("Backups folder: %s"), Utf8(BackupsFolder()).c_str()));
 }
 
 fs::path App::BackupsFolder() const {
@@ -3715,11 +4385,11 @@ bool App::OpenSummary(SaveSummary& save) {
 
 bool App::SlotsLocked(std::string& why) const {
   if (gameRunning_ || playWhenDrawn_) {
-    why = "Close the game first: it has the memory card open.";
+    why = Tr("Close the game first: it has the memory card open.");
     return true;
   }
   if (game_.playerFilesReadOnly) {
-    why = "Test run on the player's own files: the saves are not changed.";
+    why = Tr("Test run on the player's own files: the saves are not changed.");
     return true;
   }
   return false;
@@ -3777,7 +4447,7 @@ bool App::ChooseSlot(const std::string& id) {
   LookAtSlots(true);
   const sl::Slot* slot = slots_.Find(id);
   if (slot == nullptr) {
-    return SlotDone(false, "There is no such save.");
+    return SlotDone(false, Tr("There is no such save."));
   }
   if (slots_.Active().id == id) {
     return true;
@@ -3791,7 +4461,7 @@ bool App::ChooseSlot(const std::string& id) {
     return SlotDone(false, error);
   }
   LookAtSlots(true);
-  return SlotDone(true, "\"" + name + "\" is the save the game loads now.");
+  return SlotDone(true, Fmt(Tr("\"%s\" is the save the game loads now."), name.c_str()));
 }
 
 bool App::NewSlot(const std::string& name) {
@@ -3807,10 +4477,11 @@ bool App::NewSlot(const std::string& name) {
   }
   LookAtSlots(true);
   OpenSlotIs(slots_.Active().id);
-  return SlotDone(true, "Made \"" + slots_.Active().name + "\": an empty save. The game offers New Game when it starts.");
+  return SlotDone(true, Fmt(Tr("Made \"%s\": an empty save. The game offers New Game when it starts."),
+                            slots_.Active().name.c_str()));
 }
 
-static const char* const kOpenFirst = "Open a save first (click its row).";
+static const char* OpenFirst() { return Tr("Open a save first (click its row)."); }
 
 bool App::RenameSlot(const std::string& name) {
   std::string why, error;
@@ -3820,7 +4491,7 @@ bool App::RenameSlot(const std::string& name) {
   LookAtSlots(true);
   const sl::Slot* open = OpenSlot();
   if (open == nullptr) {
-    return SlotDone(false, kOpenFirst);
+    return SlotDone(false, OpenFirst());
   }
   const std::string id = open->id, before = open->name;
   if (!sl::Rename(game_.saves.dataFolder, id, name, error)) {
@@ -3828,7 +4499,7 @@ bool App::RenameSlot(const std::string& name) {
   }
   LookAtSlots(true);
   const sl::Slot* after = slots_.Find(id);
-  return SlotDone(true, "\"" + before + "\" is called \"" + (after != nullptr ? after->name : name) + "\" now.");
+  return SlotDone(true, Fmt(Tr("\"%s\" is called \"%s\" now."), before.c_str(), (after != nullptr ? after->name : name).c_str()));
 }
 
 bool App::DuplicateSlot() {
@@ -3839,7 +4510,7 @@ bool App::DuplicateSlot() {
   LookAtSlots(true);
   const sl::Slot* open = OpenSlot();
   if (open == nullptr) {
-    return SlotDone(false, kOpenFirst);
+    return SlotDone(false, OpenFirst());
   }
   const std::string from = open->name;
   if (!sl::Duplicate(game_.saves.dataFolder, open->id, id, error)) {
@@ -3847,8 +4518,9 @@ bool App::DuplicateSlot() {
   }
   LookAtSlots(true);
   const sl::Slot* made = slots_.Find(id);
-  return SlotDone(true, "Made \"" + (made != nullptr ? made->name : id) + "\": a copy of \"" + from +
-                            "\" (without its backups). \"" + slots_.Active().name + "\" is still the one the game loads.");
+  return SlotDone(true, Fmt(Tr("Made \"%s\": a copy of \"%s\" (without its backups). \"%s\" is still the one the game "
+                               "loads."),
+                            (made != nullptr ? made->name : id).c_str(), from.c_str(), slots_.Active().name.c_str()));
 }
 
 bool App::BinFolder(const fs::path& folder, std::string& error) {
@@ -3864,7 +4536,7 @@ bool App::BinFolder(const fs::path& folder, std::string& error) {
     }
     fs::rename(folder, target, ec);
     if (ec) {
-      error = "Can't move " + Utf8(folder) + " away (" + ec.message() + ").";
+      error = Fmt(Tr("Can't move %s away (%s)."), Utf8(folder).c_str(), ec.message().c_str());
       return false;
     }
     Log("saves: moved " + Utf8(folder) + " to " + Utf8(target));
@@ -3884,7 +4556,7 @@ bool App::DeleteSlot() {
   }
   LookAtSlots(true);
   if (OpenSlot() == nullptr) {
-    return SlotDone(false, kOpenFirst);
+    return SlotDone(false, OpenFirst());
   }
   const sl::Slot gone = *OpenSlot();
   const bool first = gone.id == sl::kMainId;
@@ -3908,68 +4580,163 @@ bool App::DeleteSlot() {
   if (!ok) {
     return SlotDone(false, error);
   }
-  const std::string where = game_.saves.binFolder.empty() ? sys::RecycleBinName() : Utf8(game_.saves.binFolder);
-  return SlotDone(true, first ? "\"" + gone.name + "\" is empty now: its save, setup and backups went to " + where + "."
-                              : "Deleted \"" + gone.name + "\" (it is in " + where + "). \"" + slots_.Active().name +
-                                    "\" is the save the game loads" + (chosen ? " now." : ", as before."));
+  const std::string where = game_.saves.binFolder.empty() ? SysWord(sys::RecycleBinName()) : Utf8(game_.saves.binFolder);
+  return SlotDone(true, first ? Fmt(Tr("\"%s\" is empty now: its save, setup and backups went to %s."), gone.name.c_str(),
+                                    where.c_str())
+                              : Fmt(chosen ? Tr("Deleted \"%s\" (it is in %s). \"%s\" is the save the game loads now.")
+                                           : Tr("Deleted \"%s\" (it is in %s). \"%s\" is the save the game loads, as before."),
+                                    gone.name.c_str(), where.c_str(), slots_.Active().name.c_str()));
+}
+
+std::string App::NamesDisc() {
+  std::string disc = DiscPath();
+  std::lock_guard<std::mutex> lock(bg_.mutex);
+  if (!bg_.haveVerdict || bg_.discPath != disc || bg_.verdict.kind == DiscVerdict::Kind::Problem) {
+    disc.clear();
+  }
+  return disc;
 }
 
 bool App::ImportSlot(const std::string& file) {
-  std::string why, error, id;
+  std::string why, error;
   if (SlotsLocked(why)) {
     return SlotDone(false, why);
   }
   GameInfo::ImportCheck check;
-  if (!game_.saves.checkImport || !game_.saves.checkImport(PathOf(file), check, error)) {
-    return SlotDone(false, error.empty() ? std::string("This file can't be imported.") : error);
+  if (!game_.saves.checkImport || !game_.saves.checkImport(PathOf(file), NamesDisc(), check, error)) {
+    return SlotDone(false, error.empty() ? std::string(Tr("This file can't be imported.")) : error);
+  }
+  return ImportCommit(PathOf(file), check);
+}
+
+bool App::ImportCommit(const fs::path& file, const GameInfo::ImportCheck& check) {
+  std::string why, error, id;
+  if (SlotsLocked(why)) {
+    return SlotDone(false, why);
   }
   LookAtSlots(true);
   const std::string name = sl::CleanName(check.name).empty() ? sl::NextName(slots_) : check.name;
-  if (!sl::Import(game_.saves.dataFolder, PathOf(file), name, check.cardFolder, check.cardFileName, id, error) ||
-      !sl::SetActive(game_.saves.dataFolder, id, error)) {
+  const bool made = check.gci.empty()
+                        ? sl::Import(game_.saves.dataFolder, file, name, check.cardFolder, check.cardFileName, id, error)
+                        : sl::ImportBytes(game_.saves.dataFolder, check.gci, name, check.cardFolder,
+                                          check.cardFileName, id, error);
+  if (!made || !sl::SetActive(game_.saves.dataFolder, id, error)) {
     LookAtSlots(true);
     return SlotDone(false, error);
   }
   LookAtSlots(true);
   OpenSlotIs(slots_.Active().id);
-  return SlotDone(true, "Imported as \"" + slots_.Active().name + "\", the save the game loads now. The file you chose "
-                            "was only copied.");
+  return SlotDone(true, Fmt(Tr("Imported as \"%s\", the save the game loads now. The file you chose was only copied: your other "
+                            "saves were not touched."),
+                            slots_.Active().name.c_str()));
 }
 
-bool App::ExportSlot(const std::string& file) {
-  LookAtSlots(true);
-  const sl::Slot* open = OpenSlot();
-  if (open == nullptr) {
-    return SlotDone(false, kOpenFirst);
+void App::ImportFind() {
+  importOpen_ = true;
+  slotMessage_.clear();
+  if (!game_.saves.findImportable || importScan_.busy) {
+    return;
   }
+  StopImportScan();
+  importScan_.busy = true;
+  importScan_.logged = false;
+  importScan_.thread = std::thread([this, disc = NamesDisc()] {
+    std::vector<GameInfo::ImportOffer> offers = game_.saves.findImportable(disc);
+    {
+      std::lock_guard<std::mutex> lock(importScan_.mutex);
+      importScan_.offers = std::move(offers);
+      importScan_.have = true;
+    }
+    importScan_.busy = false;
+  });
+}
+
+void App::StopImportScan() {
+  if (importScan_.thread.joinable()) {
+    importScan_.thread.join();
+  }
+}
+
+bool App::ImportPick(const std::string& arg) {
+  importOpen_ = true;
+  importError_.clear();
+  const bool number = !arg.empty() && std::all_of(arg.begin(), arg.end(), [](char c) { return c >= '0' && c <= '9'; });
+  if (number) {
+    std::lock_guard<std::mutex> lock(importScan_.mutex);
+    const int n = std::atoi(arg.c_str());
+    if (n < 1 || n > static_cast<int>(importScan_.offers.size())) {
+      Log("import: no such found save: " + arg);
+      return false;
+    }
+    importSel_ = n - 1;
+    const GameInfo::ImportOffer& o = importScan_.offers[static_cast<size_t>(n - 1)];
+    Log("import: chose found save " + arg + ": " + o.check.name + " from " + o.where);
+    return true;
+  }
+  GameInfo::ImportOffer offer;
+  offer.path = PathOf(arg);
+  offer.where = "the file you chose";
   std::string error;
-  const fs::path from = game_.saves.saveFile ? game_.saves.saveFile(sl::RootOf(game_.saves.dataFolder, open->id))
-                                             : fs::path();
-  if (!sl::Export(from, PathOf(file), error)) {
-    return SlotDone(false, error);
+  importSel_ = -1;
+  importHaveFile_ = false;
+  if (!game_.saves.checkImport || !game_.saves.checkImport(offer.path, NamesDisc(), offer.check, error)) {
+    importError_ = error.empty() ? std::string("This file can't be imported.") : error;
+    Log("import: " + importError_);
+    return false;
   }
-  return SlotDone(true, "Saved a copy of \"" + open->name + "\" as " + file + ".");
+  importFile_ = std::move(offer);
+  importHaveFile_ = true;
+  importSel_ = -2;
+  Log("import: the chosen file holds a save of " + importFile_.check.name);
+  return true;
 }
 
-void App::DrawSlots() {
-  LookAtSlots(false);
-  Heading("Saves");
-  Dim("Keep several saves side by side. The circle marks the one the game loads (CONTINUE, or New Game when it is "
-      "empty). Click a save to see what is in it.");
-  std::string why;
-  const bool locked = SlotsLocked(why);
+bool App::ImportConfirm() {
+  GameInfo::ImportOffer chosen;
+  if (importSel_ == -2 && importHaveFile_) {
+    chosen = importFile_;
+  } else if (importSel_ >= 0) {
+    std::lock_guard<std::mutex> lock(importScan_.mutex);
+    if (importSel_ >= static_cast<int>(importScan_.offers.size())) {
+      return SlotDone(false, "Choose a save first.");
+    }
+    chosen = importScan_.offers[static_cast<size_t>(importSel_)];
+  } else {
+    return SlotDone(false, "Choose a save first.");
+  }
+  const bool ok = ImportCommit(chosen.path, chosen.check);
+  if (ok) {
+    importOpen_ = false;
+    importSel_ = -1;
+    importHaveFile_ = false;
+  }
+  return ok;
+}
+
+void App::DrawImport(bool locked) {
+  if (!importOpen_) {
+    return;
+  }
+  ImGui::PushID("import");
+  ImGui::Spacing();
+  Heading("Import from Dolphin / GameCube");
+  Dim("Pokemon XD saves (the USA game) that this PC already has: in Dolphin's folders, found by themselves below, or in a "
+      "file you choose (a .gci, a memory card image, a GameCube card dump). Look at what is in one, then add it. It is "
+      "added as a NEW save: your other saves are never replaced, and the file is only copied.");
   if (locked) {
     ImGui::BeginDisabled();
   }
-  if (ImGui::Button("New...")) {
-    slotName_ = sl::NextName(slots_);
-    slotAsk_ = SlotAsk::New;
+  const bool scanning = importScan_.busy;
+  if (game_.saves.findImportable) {
+    if (ImGui::Button("Look again")) {
+      ImportFind();
+    }
+    ImGui::SameLine();
   }
-  ImGui::SameLine();
-  if (ImGui::Button("Import...")) {
-    static const SDL_DialogFileFilter kGci[] = {{"GameCube save files", "gci"}, {"All files", "*"}};
-    slotMessage_.clear();
-    SDL_ShowOpenFileDialog(
+  if (ImGui::Button("Choose a file...")) {
+    static const SDL_DialogFileFilter kCard[] = {{"GameCube saves and memory cards", "gci;raw;gcp;mcd;sav;gcs"},
+                                                 {"All files", "*"}};
+    ShowOpenDialog(
         [](void* user, const char* const* files, int) {
           App* app = static_cast<App*>(user);
           if (files != nullptr && files[0] != nullptr) {
@@ -3978,7 +4745,121 @@ void App::DrawSlots() {
             app->slotPickedKind_ = 1;
           }
         },
-        this, window_, kGci, 2, nullptr, false);
+        this, window_, kCard, 2, nullptr, false);
+  }
+  ImGui::SameLine();
+  if (ImGui::Button("Close")) {
+    importOpen_ = false;
+  }
+  if (locked) {
+    ImGui::EndDisabled();
+  }
+  if (!game_.saves.findImportable) {
+  } else if (scanning) {
+    ImGui::TextColored(kBusy, "Looking in Dolphin's folders...");
+  } else {
+    std::lock_guard<std::mutex> lock(importScan_.mutex);
+    if (importScan_.have && importScan_.offers.empty()) {
+      Dim("No Pokemon XD save found in Dolphin's folders (this PC has no Dolphin, or none of its cards holds one). "
+          "If Dolphin keeps its files somewhere else, use Choose a file....");
+    }
+    for (size_t i = 0; i < importScan_.offers.size(); i++) {
+      const GameInfo::ImportOffer& o = importScan_.offers[i];
+      std::string who;
+      std::string time;
+      for (const auto& [label, value] : o.check.preview.facts) {
+        if (label == "Trainer") who = value;
+        if (label == "Play time") time = value;
+      }
+      const std::string label = who + "  -  " + time + "  -  " + o.where;
+      ImGui::PushID(static_cast<int>(i));
+      if (ImGui::Selectable(label.c_str(), importSel_ == static_cast<int>(i))) {
+        importSel_ = static_cast<int>(i);
+        importError_.clear();
+      }
+      ImGui::PopID();
+    }
+  }
+  if (!importError_.empty()) {
+    ImGui::PushStyleColor(ImGuiCol_Text, kBad);
+    ImGui::TextWrapped("%s", importError_.c_str());
+    ImGui::PopStyleColor();
+  }
+  if (importHaveFile_) {
+    if (ImGui::Selectable(("The file you chose: " + importFile_.check.name).c_str(), importSel_ == -2)) {
+      importSel_ = -2;
+    }
+  }
+  const GameInfo::ImportCheck* shown = nullptr;
+  GameInfo::ImportCheck copy;
+  if (importSel_ == -2 && importHaveFile_) {
+    copy = importFile_.check;
+    shown = &copy;
+  } else if (importSel_ >= 0) {
+    std::lock_guard<std::mutex> lock(importScan_.mutex);
+    if (importSel_ < static_cast<int>(importScan_.offers.size())) {
+      copy = importScan_.offers[static_cast<size_t>(importSel_)].check;
+      shown = &copy;
+    }
+  }
+  if (shown != nullptr) {
+    ImGui::Spacing();
+    ImGui::Separator();
+    Heading("What is in it");
+    DrawSaveContents(shown->preview);
+    ImGui::Spacing();
+    if (locked) {
+      ImGui::BeginDisabled();
+    }
+    if (ImGui::Button("Add as a new save")) {
+      ImportConfirm();
+    }
+    if (locked) {
+      ImGui::EndDisabled();
+    }
+    ImGui::SameLine();
+    Dim("It will be called \"" + (sl::CleanName(shown->name).empty() ? sl::NextName(slots_) : shown->name) + "\" (rename it afterwards if you like).");
+    ImGui::Separator();
+  }
+  ImGui::PopID();
+}
+
+bool App::ExportSlot(const std::string& file) {
+  LookAtSlots(true);
+  const sl::Slot* open = OpenSlot();
+  if (open == nullptr) {
+    return SlotDone(false, OpenFirst());
+  }
+  std::string error;
+  const fs::path from = game_.saves.saveFile ? game_.saves.saveFile(sl::RootOf(game_.saves.dataFolder, open->id))
+                                             : fs::path();
+  if (!sl::Export(from, PathOf(file), error)) {
+    return SlotDone(false, error);
+  }
+  return SlotDone(true, Fmt(Tr("Saved a copy of \"%s\" as %s."), open->name.c_str(), file.c_str()));
+}
+
+void App::DrawSlots() {
+  LookAtSlots(false);
+  Heading(Tr("Saves"));
+  Dim(Tr("Keep several saves side by side. The circle marks the one the game loads (CONTINUE, or New Game when it is "
+         "empty). Click a save to see what is in it."));
+  std::string why;
+  const bool locked = SlotsLocked(why);
+  if (locked) {
+    ImGui::BeginDisabled();
+  }
+  if (ImGui::Button(Lbl(Tr("New..."), "New...").c_str())) {
+    slotName_ = sl::NextName(slots_);
+    slotAsk_ = SlotAsk::New;
+  }
+  ImGui::SameLine();
+  if (ImGui::Button(Lbl(Tr("Import from Dolphin / GameCube..."), "Import from Dolphin / GameCube...").c_str())) {
+    if (importOpen_) {
+      importOpen_ = false;
+    } else {
+      ImportFind();
+    }
   }
   if (locked) {
     ImGui::EndDisabled();
@@ -3989,6 +4870,7 @@ void App::DrawSlots() {
     ImGui::TextWrapped("%s", slotMessage_.c_str());
     ImGui::PopStyleColor();
   }
+  DrawImport(locked);
 
   std::string choose, toggle;
   bool duplicate = false;
@@ -4001,10 +4883,12 @@ void App::DrawSlots() {
     if (!inTable) {
       inTable = ImGui::BeginTable("##saves", 4, ImGuiTableFlags_RowBg | ImGuiTableFlags_BordersInnerH | ImGuiTableFlags_PadOuterX);
       if (inTable) {
-        ImGui::TableSetupColumn("Save", ImGuiTableColumnFlags_WidthStretch, 1.5f);
-        ImGui::TableSetupColumn("Trainer", ImGuiTableColumnFlags_WidthStretch, 1.0f);
-        ImGui::TableSetupColumn("Play time", ImGuiTableColumnFlags_WidthFixed, 132 * scale_);
-        ImGui::TableSetupColumn("Playthrough", ImGuiTableColumnFlags_WidthStretch, 1.9f);
+        ImGui::TableSetupColumn(Lbl(Tr("Save"), "Save").c_str(), ImGuiTableColumnFlags_WidthStretch, 1.5f);
+        ImGui::TableSetupColumn(Lbl(Tr("Trainer"), "Trainer").c_str(), ImGuiTableColumnFlags_WidthStretch, 1.0f);
+        ImGui::TableSetupColumn(Lbl(Tr("Play time"), "Play time").c_str(), ImGuiTableColumnFlags_WidthFixed,
+                                std::max(132 * scale_, ImGui::CalcTextSize(Tr("Play time")).x +
+                                                           ImGui::GetStyle().CellPadding.x * 2 + 8 * scale_));
+        ImGui::TableSetupColumn(Lbl(Tr("Playthrough"), "Playthrough").c_str(), ImGuiTableColumnFlags_WidthStretch, 1.9f);
         if (headers) {
           ImGui::TableHeadersRow();
         }
@@ -4024,8 +4908,8 @@ void App::DrawSlots() {
       if (locked) {
         ImGui::EndDisabled();
       }
-      if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled)) {
-        ImGui::SetTooltip("%s", loads ? "The game loads this save." : locked ? why.c_str() : "Have the game load this save.");
+      if (Hot(ImGuiHoveredFlags_AllowWhenDisabled)) {
+        ImGui::SetTooltip("%s", loads ? Tr("The game loads this save.") : locked ? why.c_str() : Tr("Have the game load this save."));
       }
       ImGui::SameLine();
       {
@@ -4054,7 +4938,7 @@ void App::DrawSlots() {
         toggle = s.id;
       }
       ImGui::PopStyleVar();
-      if (clipped && ImGui::IsItemHovered()) {
+      if (clipped && Hot()) {
         ImGui::SetTooltip("%s", s.name.c_str());
       }
       ImGui::TableSetColumnIndex(1);
@@ -4062,7 +4946,7 @@ void App::DrawSlots() {
       if (row.found) {
         ImGui::TextUnformatted(row.who.c_str());
       } else {
-        ImGui::TextColored(kDim, "%s", row.who.empty() ? "empty" : row.who.c_str());
+        ImGui::TextColored(kDim, "%s", row.who.empty() ? Tr("empty") : Tr(row.who).c_str());
       }
       ImGui::TableSetColumnIndex(2);
       ImGui::AlignTextToFramePadding();
@@ -4094,29 +4978,30 @@ void App::DrawSlots() {
   }
 
   if (slotAsk_ == SlotAsk::New) {
-    ImGui::OpenPopup("New save");
+    ImGui::OpenPopup("###newsave");
   } else if (slotAsk_ == SlotAsk::Rename) {
-    ImGui::OpenPopup("Rename this save");
+    ImGui::OpenPopup("###renamesave");
   } else if (slotAsk_ == SlotAsk::Delete) {
-    ImGui::OpenPopup("Delete this save?");
+    ImGui::OpenPopup("###deletesave");
   }
   slotAsk_ = SlotAsk::None;
   for (const bool isNew : {true, false}) {
-    if (ImGui::BeginPopupModal(isNew ? "New save" : "Rename this save", nullptr, ImGuiWindowFlags_AlwaysAutoResize)) {
-      ImGui::TextUnformatted(isNew ? "A new, empty save. What should it be called?" : "The save's new name:");
+    if (ImGui::BeginPopupModal(Lbl(isNew ? Tr("New save") : Tr("Rename this save"), isNew ? "newsave" : "renamesave").c_str(),
+                               nullptr, ImGuiWindowFlags_AlwaysAutoResize)) {
+      ImGui::TextUnformatted(isNew ? Tr("A new, empty save. What should it be called?") : Tr("The save's new name:"));
       ImGui::SetNextItemWidth(360 * scale_);
       if (ImGui::IsWindowAppearing()) {
         ImGui::SetKeyboardFocusHere();
       }
-      const bool enter = ImGui::InputText("##slotname", &slotName_, ImGuiInputTextFlags_EnterReturnsTrue);
+      const bool enter = pad::InputText("##slotname", &slotName_, ImGuiInputTextFlags_EnterReturnsTrue);
       if (isNew) {
-        Dim("The game then starts with New Game. Your other saves stay as they are.");
+        Dim(Tr("The game then starts with New Game. Your other saves stay as they are."));
       }
       const bool usable = !sl::CleanName(slotName_).empty();
       if (!usable) {
         ImGui::BeginDisabled();
       }
-      if ((ImGui::Button(isNew ? "Make it" : "Rename") || enter) && usable) {
+      if ((ImGui::Button(isNew ? Lbl(Tr("Make it"), "Make it").c_str() : Lbl(Tr("Rename"), "Rename").c_str()) || enter) && usable) {
         ImGui::CloseCurrentPopup();
         if (isNew) {
           NewSlot(slotName_);
@@ -4128,36 +5013,343 @@ void App::DrawSlots() {
         ImGui::EndDisabled();
       }
       ImGui::SameLine();
-      if (ImGui::Button("Cancel")) {
+      if (ImGui::Button(Lbl(Tr("Cancel"), "Cancel").c_str()) || BackPressed()) {
         ImGui::CloseCurrentPopup();
       }
       ImGui::EndPopup();
     }
   }
-  if (ImGui::BeginPopupModal("Delete this save?", nullptr, ImGuiWindowFlags_AlwaysAutoResize)) {
+  if (ImGui::BeginPopupModal(Lbl(Tr("Delete this save?"), "deletesave").c_str(), nullptr, ImGuiWindowFlags_AlwaysAutoResize)) {
     const sl::Slot* open = OpenSlot();
     if (open == nullptr) {
       ImGui::CloseCurrentPopup();
     } else {
-      ImGui::Text("Delete \"%s\"?", open->name.c_str());
-      Dim("Its save, its playthrough setup and its backups go to " + std::string(sys::RecycleBinName()) + " (you can take them back out of it).");
+      ImGui::Text(Tr("Delete \"%s\"?"), open->name.c_str());
+      Dim(Fmt(Tr("Its save, its playthrough setup and its backups go to %s (you can take them back out of it)."),
+              SysWord(sys::RecycleBinName()).c_str()));
       if (open->id == sl::kMainId) {
-        Dim("This is the first save: its place in the list stays, empty.");
+        Dim(Tr("This is the first save: its place in the list stays, empty."));
       }
       if (open->id == slots_.Active().id && open->id != sl::kMainId) {
-        Dim("It is the save the game loads: after this the game loads the first save.");
+        Dim(Tr("It is the save the game loads: after this the game loads the first save."));
       }
-      if (ImGui::Button("Delete it")) {
+      if (ImGui::Button(Lbl(Tr("Delete it"), "Delete it").c_str())) {
         ImGui::CloseCurrentPopup();
         DeleteSlot();
       }
       ImGui::SameLine();
-      if (ImGui::Button("Keep it")) {
+      if (ImGui::Button(Lbl(Tr("Keep it"), "Keep it").c_str()) || BackPressed()) {
         ImGui::CloseCurrentPopup();
       }
+      ImGui::SetItemDefaultFocus();
     }
     ImGui::EndPopup();
   }
+}
+
+bool App::TradePick(const std::string& file) {
+  std::string why;
+  const sl::Slot* open = OpenSlot();
+  if (open == nullptr || !game_.saves.tradeOpen) {
+    Log("trade: no save is open (openslot:<n> first)");
+    return false;
+  }
+  tradeFor_ = open->id;
+  tradeFile_ = PathOf(file);
+  tradeError_.clear();
+  tradeHave_ = false;
+  tradeMine_ = tradeTheirs_ = -1;
+  if (!game_.saves.tradeOpen(sl::RootOf(game_.saves.dataFolder, open->id), tradeFile_, NamesDisc(), tradeView_, tradeError_)) {
+    Log("trade: " + tradeError_);
+    return false;
+  }
+  tradeHave_ = true;
+  Log("trade: " + std::to_string(tradeView_.mine.size()) + " Pokemon on your side, " + std::to_string(tradeView_.theirs.size()) +
+      " on the " + tradeView_.theirsWho + "'s");
+  for (size_t i = 0; i < tradeView_.mine.size(); i++) {
+    const auto& m = tradeView_.mine[i];
+    Log("trade:   yours #" + std::to_string(i + 1) + " " + m.species + " L" + m.level + (m.problem.empty() ? ": can go" : ": " + m.problem));
+  }
+  for (size_t i = 0; i < tradeView_.theirs.size(); i++) {
+    const auto& m = tradeView_.theirs[i];
+    Log("trade:   theirs #" + std::to_string(i + 1) + " " + m.species + " L" + m.level + (m.problem.empty() ? ": can go" : ": " + m.problem));
+  }
+  return true;
+}
+
+bool App::TradeConfirm() {
+  std::string why;
+  if (SlotsLocked(why)) {
+    return SlotDone(false, why);
+  }
+  const sl::Slot* open = OpenSlot();
+  if (open == nullptr || !tradeHave_ || tradeFor_ != open->id || !game_.saves.tradeDo) {
+    return SlotDone(false, "Choose a GBA save first.");
+  }
+  if (tradeMine_ < 0 || tradeTheirs_ < 0) {
+    return SlotDone(false, "Choose one Pokemon on each side.");
+  }
+  const std::string id = open->id;
+  const GameInfo::Saves::TradeResult r = game_.saves.tradeDo(sl::RootOf(game_.saves.dataFolder, id), tradeFile_, NamesDisc(), tradeMine_, tradeTheirs_);
+  tradeOk_ = r.ok;
+  tradeMessage_ = r.message;
+  SlotDone(r.ok, r.message);
+  if (r.ok) {
+    LookAtSlots(true);
+    backupsLookedAt_ = 0;
+    if (slots_.Active().id == id) {
+      ActiveSaveChanged();
+    } else {
+      openReadAgain_ = true;
+    }
+    TradePick(Utf8(tradeFile_));
+    tradeMine_ = tradeTheirs_ = -1;
+  }
+  return r.ok;
+}
+
+void App::DrawTrade(const sl::Slot& slot, bool locked) {
+  if (tradeFor_ != slot.id) {
+    return;
+  }
+  ImGui::PushID("trade");
+  ImGui::Spacing();
+  ImGui::Separator();
+  Heading(game_.saves.tradeName.c_str());
+  Dim("Trade one Pokemon of this save for one of a Game Boy Advance save (Ruby, Sapphire, Emerald, FireRed, LeafGreen), as "
+      "the GameCube's link cable does. Every Pokemon is checked first: the game's own rules and \"could it exist\". Your GBA "
+      "save is never changed: a new file is made next to it. Backups of both saves are made before anything is written.");
+  if (locked) {
+    ImGui::BeginDisabled();
+  }
+  if (ImGui::Button("Choose a GBA save...")) {
+    static const SDL_DialogFileFilter kGba[] = {{"Game Boy Advance saves", "sav;srm;sa1"}, {"All files", "*"}};
+    ShowOpenDialog(
+        [](void* user, const char* const* files, int) {
+          App* app = static_cast<App*>(user);
+          if (files != nullptr && files[0] != nullptr) {
+            std::lock_guard<std::mutex> lock(app->pickMutex_);
+            app->slotPicked_ = files[0];
+            app->slotPickedKind_ = 3;
+          }
+        },
+        this, window_, kGba, 2, nullptr, false);
+  }
+  ImGui::SameLine();
+  if (ImGui::Button("Close##trade")) {
+    tradeFor_.clear();
+    tradeHave_ = false;
+  }
+  if (locked) {
+    ImGui::EndDisabled();
+  }
+  if (!tradeError_.empty()) {
+    ImGui::PushStyleColor(ImGuiCol_Text, kBad);
+    ImGui::TextWrapped("%s", tradeError_.c_str());
+    ImGui::PopStyleColor();
+  }
+  if (tradeHave_) {
+    Dim("GBA save: " + Utf8(tradeFile_));
+    const auto drawSide = [&](const char* title, const std::string& who, const std::vector<GameInfo::Saves::TradeMon>& mons, int& sel) {
+      ImGui::TextColored(kDim, "%s: %s", title, who.c_str());
+      for (size_t i = 0; i < mons.size(); i++) {
+        const auto& m = mons[i];
+        if (m.problem == "empty") {
+          continue;
+        }
+        const bool can = m.problem.empty();
+        std::string label = "#" + std::to_string(i + 1) + "  " + m.species + "  Lv " + m.level + "  " + m.nickname +
+                            (m.item == "-" ? "" : "  holds " + m.item);
+        ImGui::PushID(static_cast<int>(i) + (title[0] == 'Y' ? 0 : 100));
+        if (!can) {
+          ImGui::BeginDisabled();
+        }
+        if (ImGui::Selectable(label.c_str(), sel == static_cast<int>(i))) {
+          sel = static_cast<int>(i);
+        }
+        if (!can) {
+          ImGui::EndDisabled();
+          ImGui::Indent(24 * scale_);
+          ImGui::PushStyleColor(ImGuiCol_Text, kWarn);
+          ImGui::TextWrapped("%s", m.problem.c_str());
+          ImGui::PopStyleColor();
+          ImGui::Unindent(24 * scale_);
+        }
+        ImGui::PopID();
+      }
+    };
+    drawSide("Your save", tradeView_.mineWho, tradeView_.mine, tradeMine_);
+    ImGui::Spacing();
+    drawSide("GBA party", tradeView_.theirsWho, tradeView_.theirs, tradeTheirs_);
+    for (const std::string& n : tradeView_.notes) {
+      Dim(n);
+    }
+    if (locked) {
+      ImGui::BeginDisabled();
+    }
+    if (ImGui::Button("Trade these two")) {
+      TradeConfirm();
+    }
+    if (locked) {
+      ImGui::EndDisabled();
+    }
+  }
+  ImGui::PopID();
+}
+
+bool App::MonsPick(const std::string& file) {
+  const sl::Slot* open = OpenSlot();
+  if (open == nullptr || !game_.saves.monsOpen) {
+    Log("import: no save is open (openslot:<n> first)");
+    return false;
+  }
+  monsFor_ = open->id;
+  monsFile_ = PathOf(file);
+  monsError_.clear();
+  monsHave_ = false;
+  monsPicked_.clear();
+  if (!game_.saves.monsOpen(sl::RootOf(game_.saves.dataFolder, open->id), monsFile_, NamesDisc(), monsView_, monsError_)) {
+    Log("mons: " + monsError_);
+    return false;
+  }
+  monsHave_ = true;
+  monsPicked_.assign(monsView_.rows.size(), 0);
+  Log("mons: " + std::to_string(monsView_.rows.size()) + " Pokemon in the " + game_.saves.monsName + " save of " + monsView_.who + "; room for " +
+      std::to_string(monsView_.room) + " in this save's PC boxes");
+  for (size_t i = 0; i < monsView_.rows.size(); i++) {
+    const auto& r = monsView_.rows[i];
+    Log("mons:   #" + std::to_string(i + 1) + " " + r.where + ": " + r.species + " L" + r.level + (r.problem.empty() ? ": can come" : ": " + r.problem));
+    for (const std::string& l : r.lost) {
+      Log("mons:       lost: " + l);
+    }
+  }
+  return true;
+}
+
+bool App::MonsConfirm() {
+  std::string why;
+  if (SlotsLocked(why)) {
+    return SlotDone(false, why);
+  }
+  const sl::Slot* open = OpenSlot();
+  if (open == nullptr || !monsHave_ || monsFor_ != open->id || !game_.saves.monsDo) {
+    return SlotDone(false, "Choose a save to take Pokemon from first.");
+  }
+  std::vector<int> rows;
+  for (size_t i = 0; i < monsPicked_.size(); i++) {
+    if (monsPicked_[i] != 0) {
+      rows.push_back(static_cast<int>(i));
+    }
+  }
+  if (rows.empty()) {
+    return SlotDone(false, "Tick at least one Pokemon.");
+  }
+  const std::string id = open->id;
+  const GameInfo::Saves::TradeResult r = game_.saves.monsDo(sl::RootOf(game_.saves.dataFolder, id), monsFile_, NamesDisc(), rows);
+  SlotDone(r.ok, r.message);
+  if (r.ok) {
+    LookAtSlots(true);
+    backupsLookedAt_ = 0;
+    if (slots_.Active().id == id) {
+      ActiveSaveChanged();
+    } else {
+      openReadAgain_ = true;
+    }
+    MonsPick(Utf8(monsFile_));
+  }
+  return r.ok;
+}
+
+void App::DrawMons(const sl::Slot& slot, bool locked) {
+  if (monsFor_ != slot.id) {
+    return;
+  }
+  ImGui::PushID("mons");
+  ImGui::Spacing();
+  ImGui::Separator();
+  Heading(game_.saves.monsName.c_str());
+  Dim("Copy Pokemon out of a Pokemon Colosseum (USA) save into the PC boxes of this save. The Colosseum save is only read. "
+      "Look at what each Pokemon loses on the way before you confirm; Pokemon that can't come say why.");
+  if (locked) {
+    ImGui::BeginDisabled();
+  }
+  if (ImGui::Button("Choose a Colosseum save...")) {
+    static const SDL_DialogFileFilter kColo[] = {{"GameCube saves and memory cards", "gci;raw;gcp;mcd"}, {"All files", "*"}};
+    ShowOpenDialog(
+        [](void* user, const char* const* files, int) {
+          App* app = static_cast<App*>(user);
+          if (files != nullptr && files[0] != nullptr) {
+            std::lock_guard<std::mutex> lock(app->pickMutex_);
+            app->slotPicked_ = files[0];
+            app->slotPickedKind_ = 4;
+          }
+        },
+        this, window_, kColo, 2, nullptr, false);
+  }
+  ImGui::SameLine();
+  if (ImGui::Button("Close##mons")) {
+    monsFor_.clear();
+    monsHave_ = false;
+  }
+  if (locked) {
+    ImGui::EndDisabled();
+  }
+  if (!monsError_.empty()) {
+    ImGui::PushStyleColor(ImGuiCol_Text, kBad);
+    ImGui::TextWrapped("%s", monsError_.c_str());
+    ImGui::PopStyleColor();
+  }
+  if (monsHave_) {
+    Dim("Colosseum save of " + monsView_.who + ": " + Utf8(monsFile_));
+    int ticked = 0;
+    for (char c : monsPicked_) {
+      ticked += c != 0 ? 1 : 0;
+    }
+    if (monsView_.rows.empty()) {
+      Dim("There are no Pokemon in that save.");
+    }
+    for (size_t i = 0; i < monsView_.rows.size(); i++) {
+      const auto& r = monsView_.rows[i];
+      ImGui::PushID(static_cast<int>(i));
+      const bool can = r.problem.empty();
+      if (!can) {
+        ImGui::BeginDisabled();
+      }
+      bool on = monsPicked_[i] != 0;
+      const std::string label = r.where + "   " + r.species + "  Lv " + r.level + "  " + r.nickname;
+      if (ImGui::Checkbox(label.c_str(), &on)) {
+        monsPicked_[i] = on ? 1 : 0;
+      }
+      if (!can) {
+        ImGui::EndDisabled();
+      }
+      ImGui::Indent(28 * scale_);
+      if (!can) {
+        ImGui::PushStyleColor(ImGuiCol_Text, kWarn);
+        ImGui::TextWrapped("Stays in the Colosseum save: %s", r.problem.c_str());
+        ImGui::PopStyleColor();
+      }
+      for (const std::string& l : r.lost) {
+        Dim("Loses: " + l);
+      }
+      ImGui::Unindent(28 * scale_);
+      ImGui::PopID();
+    }
+    for (const std::string& n : monsView_.notes) {
+      Dim(n);
+    }
+    ImGui::Text("Room in this save's PC boxes: %d.  Ticked: %d.", monsView_.room, ticked);
+    if (locked) {
+      ImGui::BeginDisabled();
+    }
+    if (ImGui::Button("Copy the ticked Pokemon into the PC boxes")) {
+      MonsConfirm();
+    }
+    if (locked) {
+      ImGui::EndDisabled();
+    }
+  }
+  ImGui::PopID();
 }
 
 void App::DrawSlotBox(const sl::Slot& slot, bool locked, bool& duplicate) {
@@ -4168,18 +5360,18 @@ void App::DrawSlotBox(const sl::Slot& slot, bool locked, bool& duplicate) {
   const bool have = OpenSummary(save);
   const bool found = have && save.state == SaveSummary::State::Found;
   const bool loads = slot.id == slots_.Active().id;
-  Dim(loads ? "The game loads this save." : "The game does not load this save (its circle is not ticked).");
+  Dim(loads ? Tr("The game loads this save.") : Tr("The game does not load this save (its circle is not ticked)."));
   if (!have) {
-    ImGui::TextColored(kBusy, "Reading the memory card...");
+    ImGui::TextColored(kBusy, "%s", Tr("Reading the memory card..."));
   } else if (save.state == SaveSummary::State::None) {
-    ImGui::TextUnformatted("No save yet: the game offers New Game.");
-    Dim("Folder: " + Utf8(sl::RootOf(game_.saves.dataFolder, slot.id)));
+    ImGui::TextUnformatted(Tr("No save yet: the game offers New Game."));
+    Dim(Fmt(Tr("Folder: %s"), Utf8(sl::RootOf(game_.saves.dataFolder, slot.id)).c_str()));
   } else if (!found) {
     ImGui::PushStyleColor(ImGuiCol_Text, kWarn);
-    ImGui::TextWrapped("%s", save.message.c_str());
+    ImGui::TextWrapped("%s", Tr(save.message).c_str());
     ImGui::PopStyleColor();
     if (!save.where.empty()) {
-      Dim("Memory card: " + save.where);
+      Dim(Fmt(Tr("Memory card: %s"), save.where.c_str()));
     }
   } else {
     DrawSaveContents(save);
@@ -4193,14 +5385,31 @@ void App::DrawSlotBox(const sl::Slot& slot, bool locked, bool& duplicate) {
   if (locked) {
     ImGui::BeginDisabled();
   }
-  if (ImGui::Button("Rename...")) {
+  if (ImGui::Button(Lbl(Tr("Rename..."), "Rename...").c_str())) {
     slotName_ = slot.name;
     slotAsk_ = SlotAsk::Rename;
   }
   if (found) {
     ImGui::SameLine();
-    if (ImGui::Button("Duplicate")) {
+    if (ImGui::Button(Lbl(Tr("Duplicate"), "Duplicate").c_str())) {
       duplicate = true;
+    }
+  }
+  if (found && game_.saves.monsOpen) {
+    ImGui::SameLine();
+    if (ImGui::Button((game_.saves.monsName + "...").c_str())) {
+      monsFor_ = slot.id;
+      monsHave_ = false;
+      monsError_.clear();
+    }
+  }
+  if (found && game_.saves.tradeOpen) {
+    ImGui::SameLine();
+    if (ImGui::Button((game_.saves.tradeName + "...").c_str())) {
+      tradeFor_ = slot.id;
+      tradeHave_ = false;
+      tradeError_.clear();
+      tradeMine_ = tradeTheirs_ = -1;
     }
   }
   if (locked) {
@@ -4208,12 +5417,13 @@ void App::DrawSlotBox(const sl::Slot& slot, bool locked, bool& duplicate) {
   }
   if (found) {
     ImGui::SameLine();
-    if (ImGui::Button("Export...")) {
-      static const SDL_DialogFileFilter kGci[] = {{"GameCube save files", "gci"}};
+    if (ImGui::Button(Lbl(Tr("Export..."), "Export...").c_str())) {
+      static SDL_DialogFileFilter kGci[1];
+      kGci[0] = {Tr("GameCube save files"), "gci"};
       const fs::path start = sys::KnownFolder(sys::Folder::Documents, false);
       const std::string where = Utf8(start / PathOf(game_.saves.exportName));
       slotMessage_.clear();
-      SDL_ShowSaveFileDialog(
+      ShowSaveDialog(
           [](void* user, const char* const* files, int) {
             App* app = static_cast<App*>(user);
             if (files != nullptr && files[0] != nullptr) {
@@ -4229,12 +5439,14 @@ void App::DrawSlotBox(const sl::Slot& slot, bool locked, bool& duplicate) {
     ImGui::BeginDisabled();
   }
   ImGui::SameLine();
-  if (ImGui::Button("Delete...")) {
+  if (ImGui::Button(Lbl(Tr("Delete..."), "Delete...").c_str())) {
     slotAsk_ = SlotAsk::Delete;
   }
   if (locked) {
     ImGui::EndDisabled();
   }
+  DrawTrade(slot, locked);
+  DrawMons(slot, locked);
   EndCard();
   ImGui::PopID();
 }
@@ -4248,13 +5460,13 @@ void App::DrawSaveSummary() {
     save = bg_.save;
   }
   if (!have) {
-    ImGui::TextColored(kBusy, "Reading the memory card...");
+    ImGui::TextColored(kBusy, "%s", Tr("Reading the memory card..."));
     return;
   }
   if (save.state != SaveSummary::State::Found) {
-    ImGui::TextColored(save.state == SaveSummary::State::None ? kDim : kWarn, "%s", save.message.c_str());
+    ImGui::TextColored(save.state == SaveSummary::State::None ? kDim : kWarn, "%s", Tr(save.message).c_str());
     if (!save.where.empty()) {
-      Dim("Memory card: " + save.where);
+      Dim(Fmt(Tr("Memory card: %s"), save.where.c_str()));
     }
     return;
   }
@@ -4266,21 +5478,21 @@ void App::DrawSaveContents(const SaveSummary& save) {
     for (const auto& [label, value] : save.facts) {
       ImGui::TableNextRow();
       ImGui::TableSetColumnIndex(0);
-      ImGui::TextColored(kDim, "%s", label.c_str());
+      ImGui::TextColored(kDim, "%s", Tr(label).c_str());
       ImGui::TableSetColumnIndex(1);
       ImGui::TextUnformatted(value.c_str());
     }
     ImGui::EndTable();
   }
   ImGui::Spacing();
-  Heading("Party");
+  Heading(Tr("Party"));
   const int columns = static_cast<int>(save.partyColumns.size());
   if (save.party.empty()) {
-    Dim("No Pokemon in the party yet.");
+    Dim(Tr("No Pokemon in the party yet."));
   } else if (columns > 0 && ImGui::BeginTable("##party", columns, ImGuiTableFlags_RowBg | ImGuiTableFlags_BordersInnerH |
                                                                        ImGuiTableFlags_PadOuterX)) {
     for (const std::string& c : save.partyColumns) {
-      ImGui::TableSetupColumn(c.c_str());
+      ImGui::TableSetupColumn(Tr(c).c_str());
     }
     ImGui::TableHeadersRow();
     for (const auto& row : save.party) {
@@ -4293,11 +5505,11 @@ void App::DrawSaveContents(const SaveSummary& save) {
     ImGui::EndTable();
   }
   for (const std::string& n : save.notes) {
-    Dim(n);
+    Dim(Tr(n));
   }
   DrawSetup(save);
   ImGui::Spacing();
-  Dim("Memory card: " + save.where);
+  Dim(Fmt(Tr("Memory card: %s"), save.where.c_str()));
 }
 
 void App::DrawSetup(const SaveSummary& save) {
@@ -4305,50 +5517,50 @@ void App::DrawSetup(const SaveSummary& save) {
     return;
   }
   ImGui::Spacing();
-  Heading("Playthrough");
+  Heading(Tr("Playthrough"));
   if (ImGui::BeginTable("##setup", 2, ImGuiTableFlags_SizingFixedFit | ImGuiTableFlags_PadOuterX)) {
     ImGui::TableSetupColumn("##what", ImGuiTableColumnFlags_WidthFixed);
     ImGui::TableSetupColumn("##value", ImGuiTableColumnFlags_WidthStretch);
     for (const auto& [label, value] : save.setup) {
       ImGui::TableNextRow();
       ImGui::TableSetColumnIndex(0);
-      ImGui::TextColored(kDim, "%s", label.c_str());
+      ImGui::TextColored(kDim, "%s", Tr(label).c_str());
       ImGui::TableSetColumnIndex(1);
       ImGui::TextWrapped("%s", value.c_str());
     }
     ImGui::EndTable();
   }
   for (const std::string& n : save.setupNotes) {
-    Dim(n);
+    Dim(Tr(n));
   }
   if (!save.shareCode.empty()) {
-    if (ImGui::Button("Copy code")) {
+    if (ImGui::Button(Lbl(Tr("Copy code"), "Copy code").c_str())) {
       CopyCode(save.shareCode);
     }
     if (!save.spoilerFile.empty()) {
       ImGui::SameLine();
-      if (ImGui::Button("Show spoilers...")) {
+      if (ImGui::Button(Lbl(Tr("Show spoilers..."), "Show spoilers...").c_str())) {
         askSpoilers_ = true;
       }
     }
-    Dim(codeMessage_.empty() ? "Give the code to a friend: on the New Game setup screen they choose \"Use a friend's "
-                               "code\" and get the same changes."
+    Dim(codeMessage_.empty() ? std::string(Tr("Give the code to a friend: on the New Game setup screen they choose \"Use a "
+                                              "friend's code\" and get the same changes."))
                              : codeMessage_);
   }
   if (askSpoilers_) {
     askSpoilers_ = false;
-    ImGui::OpenPopup("Show spoilers?");
+    ImGui::OpenPopup("###spoilers");
   }
-  if (ImGui::BeginPopupModal("Show spoilers?", nullptr, ImGuiWindowFlags_AlwaysAutoResize)) {
-    ImGui::TextUnformatted("This shows everything the randomizer changed in this playthrough.");
-    Dim("Which Pokemon, trainers and items are where: it spoils the surprises.");
-    if (ImGui::Button("Show them")) {
+  if (ImGui::BeginPopupModal(Lbl(Tr("Show spoilers?"), "spoilers").c_str(), nullptr, ImGuiWindowFlags_AlwaysAutoResize)) {
+    ImGui::TextUnformatted(Tr("This shows everything the randomizer changed in this playthrough."));
+    Dim(Tr("Which Pokemon, trainers and items are where: it spoils the surprises."));
+    if (ImGui::Button(Lbl(Tr("Show them"), "Show them").c_str())) {
       ImGui::CloseCurrentPopup();
       Log("spoilers: " + Utf8(save.spoilerFile));
       OpenInSystem(save.spoilerFile);
     }
     ImGui::SameLine();
-    if (ImGui::Button("Cancel") || closeSpoilers_) {
+    if (ImGui::Button(Lbl(Tr("Cancel"), "Cancel").c_str()) || closeSpoilers_ || BackPressed()) {
       closeSpoilers_ = false;
       ImGui::CloseCurrentPopup();
     }
@@ -4358,9 +5570,9 @@ void App::DrawSetup(const SaveSummary& save) {
 
 void App::CopyCode(const std::string& code) {
   if (SDL_SetClipboardText(code.c_str())) {
-    codeMessage_ = "Copied " + code + ": paste it to your friend.";
+    codeMessage_ = Fmt(Tr("Copied %s: paste it to your friend."), code.c_str());
   } else {
-    codeMessage_ = std::string("The code could not be copied: ") + SDL_GetError();
+    codeMessage_ = Fmt(Tr("The code could not be copied: %s"), SDL_GetError());
   }
 }
 
@@ -4389,7 +5601,7 @@ void App::ExportReport(const std::string& file) {
   const reports::Report* r = SelectedReport();
   if (r == nullptr) {
     reportOk_ = false;
-    reportMessage_ = "Choose a report first.";
+    reportMessage_ = Tr("Choose a report first.");
     return;
   }
   fs::path to = PathOf(file);
@@ -4398,7 +5610,7 @@ void App::ExportReport(const std::string& file) {
   }
   std::string error;
   reportOk_ = reports::Export(*r, to, exportOptions_, reports::CurrentIdentity(), error);
-  reportMessage_ = reportOk_ ? "Exported to " + Utf8(to) + ". You can send that file to whoever asked for it." : error;
+  reportMessage_ = reportOk_ ? Fmt(Tr("Exported to %s. You can send that file to whoever asked for it."), Utf8(to).c_str()) : error;
 }
 
 void App::DeleteReport() {
@@ -4408,7 +5620,7 @@ void App::DeleteReport() {
   }
   std::string error;
   reportOk_ = reports::Delete(*r, error);
-  reportMessage_ = reportOk_ ? "Deleted the report of " + r->when + "." : error;
+  reportMessage_ = reportOk_ ? Fmt(Tr("Deleted the report of %s."), r->when.c_str()) : error;
   if (reportOk_) {
     reportSel_.clear();
   }
@@ -4433,7 +5645,7 @@ void App::SaveSession(const std::string& file) {
   }
   if (sessionSel_ >= sessions_.size()) {
     sessionOk_ = false;
-    sessionMessage_ = "There is no play session to save.";
+    sessionMessage_ = Tr("There is no play session to save.");
     return;
   }
   fs::path to = PathOf(file);
@@ -4445,36 +5657,36 @@ void App::SaveSession(const std::string& file) {
   std::string error;
   sessionOk_ = reports::ExportSession(sessions_, sessionSel_, sessionBundle_, to, exportOptions_.hideUserName,
                                       game_.updates.version, reports::CurrentIdentity(), error);
-  sessionMessage_ = sessionOk_ ? "Saved " + Utf8(to) + ". You can send that file to whoever asked for it." : error;
+  sessionMessage_ = sessionOk_ ? Fmt(Tr("Saved %s. You can send that file to whoever asked for it."), Utf8(to).c_str()) : error;
 }
 
 void App::DrawSessionWindow() {
-  const char* kTitle = "Save a play session";
-  if (sessionOpen_ && !ImGui::IsPopupOpen(kTitle)) {
+  const std::string title = Lbl(Tr("Save a play session"), "session");
+  if (sessionOpen_ && !ImGui::IsPopupOpen("###session")) {
     LookAtSessions();
     sessionMessage_.clear();
-    ImGui::OpenPopup(kTitle);
+    ImGui::OpenPopup("###session");
   }
   const ImVec2 view = ImGui::GetMainViewport()->WorkSize;
   ImGui::SetNextWindowSize(ImVec2(std::min(view.x - 40 * scale_, 900 * scale_), view.y - 60 * scale_), ImGuiCond_Appearing);
   ImGui::SetNextWindowPos(ImGui::GetMainViewport()->GetCenter(), ImGuiCond_Appearing, ImVec2(0.5f, 0.5f));
   bool open = true;
-  if (!ImGui::BeginPopupModal(kTitle, &open)) {
+  if (!ImGui::BeginPopupModal(title.c_str(), &open)) {
     sessionOpen_ = false;
     return;
   }
-  Dim("For when the game stopped, froze or was closed and no report was made. This makes one .zip file of a play "
-      "session: what the game program wrote about itself (its log), your button presses, your memory card at the "
-      "start and after each save, and your settings and mod list. Nothing is sent: you save the file and give it to "
-      "the developer yourself.");
-  if (ImGui::Button("Look again")) {
+  Dim(Tr("For when the game stopped, froze or was closed and no report was made. This makes one .zip file of a play "
+         "session: what the game program wrote about itself (its log), your button presses, your memory card at the "
+         "start and after each save, and your settings and mod list. Nothing is sent: you save the file and give it to "
+         "the developer yourself."));
+  if (ImGui::Button(Lbl(Tr("Look again"), "Look again").c_str())) {
     LookAtSessions();
   }
   ImGui::Spacing();
   if (sessions_.empty()) {
-    ImGui::TextUnformatted("No play sessions yet.");
-    Dim("A session is kept each time you play the game (the newest few are kept), so the time you play next can be "
-        "saved here.");
+    ImGui::TextUnformatted(Tr("No play sessions yet."));
+    Dim(Tr("A session is kept each time you play the game (the newest few are kept), so the time you play next can be "
+           "saved here."));
   } else {
     const float listH = std::min(static_cast<float>(sessions_.size()) + 1.6f, 6.6f) * ImGui::GetFrameHeightWithSpacing();
     if (ImGui::BeginTable("##sessions", 4,
@@ -4482,10 +5694,10 @@ void App::DrawSessionWindow() {
                               ImGuiTableFlags_PadOuterX,
                           ImVec2(0, listH))) {
       ImGui::TableSetupScrollFreeze(0, 1);
-      ImGui::TableSetupColumn("Started", ImGuiTableColumnFlags_WidthFixed);
-      ImGui::TableSetupColumn("Played", ImGuiTableColumnFlags_WidthFixed);
-      ImGui::TableSetupColumn("Size", ImGuiTableColumnFlags_WidthFixed);
-      ImGui::TableSetupColumn("How it ended", ImGuiTableColumnFlags_WidthStretch);
+      ImGui::TableSetupColumn(Lbl(Tr("Started"), "Started").c_str(), ImGuiTableColumnFlags_WidthFixed);
+      ImGui::TableSetupColumn(Lbl(Tr("Played"), "Played").c_str(), ImGuiTableColumnFlags_WidthFixed);
+      ImGui::TableSetupColumn(Lbl(Tr("Size"), "Size").c_str(), ImGuiTableColumnFlags_WidthFixed);
+      ImGui::TableSetupColumn(Lbl(Tr("How it ended"), "How it ended").c_str(), ImGuiTableColumnFlags_WidthStretch);
       ImGui::TableHeadersRow();
       for (size_t i = 0; i < sessions_.size(); i++) {
         const reports::Session& s = sessions_[i];
@@ -4502,14 +5714,15 @@ void App::DrawSessionWindow() {
         ImGui::TableSetColumnIndex(2);
         ImGui::TextUnformatted(reports::SizeText(s.logSize + s.recordingSize + s.cardsSize).c_str());
         ImGui::TableSetColumnIndex(3);
-        std::string how = s.recording.empty() ? "the game didn't start playing"
-                          : s.ended           ? "closed normally"
-                                              : "not closed normally (stopped, crashed or killed; or still running)";
+        std::string how = s.recording.empty() ? Tr("the game didn't start playing")
+                          : s.ended           ? Tr("closed normally")
+                                              : Tr("not closed normally (stopped, crashed or killed; or still running)");
         if (s.shortRun && !s.recording.empty()) {
-          how = "very short; " + how;
+          how = Fmt(Tr("very short; %s"), how.c_str());
         }
         if (!s.reports.empty()) {
-          how += ", " + std::to_string(s.reports.size()) + (s.reports.size() == 1 ? " report" : " reports");
+          how = Fmt(s.reports.size() == 1 ? Tr("%s, %d report") : Tr("%s, %d reports"), how.c_str(),
+                    static_cast<int>(s.reports.size()));
         }
         ImGui::PushStyleColor(ImGuiCol_Text, kDim);
         ImGui::TextUnformatted(how.c_str());
@@ -4527,25 +5740,29 @@ void App::DrawSessionWindow() {
       sessionBundleFor_ = key;
     }
     ImGui::Spacing();
-    ImGui::Checkbox((std::string("Hide my ") + sys::UserNameWords()).c_str(), &exportOptions_.hideUserName);
-    Dim(std::string("Your ") + sys::UserNameWords() +
-        " appears in folder names in the log, the recording and the settings (" + sys::HomeFolderExample() +
-        "). With this on, the saved copy says %USERNAME% instead.");
+    ImGui::Checkbox(Lbl(Fmt(Tr("Hide my %s"), SysWord(sys::UserNameWords()).c_str()).c_str(),
+                        (std::string("Hide my ") + sys::UserNameWords()).c_str())
+                        .c_str(),
+                    &exportOptions_.hideUserName);
+    Dim(Fmt(Tr("Your %s appears in folder names in the log, the recording and the settings (%s). With this on, the "
+               "saved copy says %%USERNAME%% instead."),
+            SysWord(sys::UserNameWords()).c_str(), sys::HomeFolderExample()));
     if (!sessionBundle_.choice.empty()) {
       ImGui::PushStyleColor(ImGuiCol_Text, kWarn);
       ImGui::TextWrapped("%s", sessionBundle_.choice.c_str());
       ImGui::PopStyleColor();
     }
     if (!s.reports.empty()) {
-      ImGui::TextWrapped("A report was made during this session: it is included (without a crash dump; to add that, "
-                         "use Export on the report in the list).");
+      ImGui::TextWrapped("%s", Tr("A report was made during this session: it is included (without a crash dump; to add "
+                                  "that, use Export on the report in the list)."));
     }
-    if (ImGui::Button("Save...")) {
-      static const SDL_DialogFileFilter kZip[] = {{"Zip files", "zip"}};
+    if (ImGui::Button(Lbl(Tr("Save..."), "Save...").c_str())) {
+      static SDL_DialogFileFilter kZip[1];
+      kZip[0] = {Tr("Zip files"), "zip"};
       const fs::path start = sys::KnownFolder(sys::Folder::Documents, false);
       const std::string where = Utf8(start / PathOf(reports::SessionExportName(s)));
       sessionMessage_.clear();
-      SDL_ShowSaveFileDialog(
+      ShowSaveDialog(
           [](void* user, const char* const* files, int) {
             App* app = static_cast<App*>(user);
             if (files != nullptr && files[0] != nullptr) {
@@ -4557,7 +5774,7 @@ void App::DrawSessionWindow() {
           this, window_, kZip, 1, where.c_str());
     }
     ImGui::SameLine();
-    if (ImGui::Button("Close")) {
+    if (ImGui::Button(Lbl(Tr("Close"), "Close").c_str())) {
       open = false;
     }
     if (!sessionMessage_.empty()) {
@@ -4566,63 +5783,66 @@ void App::DrawSessionWindow() {
       ImGui::PopStyleColor();
     }
     ImGui::Spacing();
-    Heading(("What's inside (" + reports::SizeText(sessionBundle_.size) + ")").c_str());
+    Heading(Fmt(Tr("What's inside (%s)"), reports::SizeText(sessionBundle_.size).c_str()).c_str());
     if (ImGui::BeginTable("##sessionfiles", 3,
                           ImGuiTableFlags_RowBg | ImGuiTableFlags_BordersInnerH | ImGuiTableFlags_PadOuterX |
                               ImGuiTableFlags_ScrollY,
                           ImVec2(0, std::max(ImGui::GetContentRegionAvail().y, 120 * scale_)))) {
       ImGui::TableSetupScrollFreeze(0, 1);
-      ImGui::TableSetupColumn("File", ImGuiTableColumnFlags_WidthFixed);
-      ImGui::TableSetupColumn("Size", ImGuiTableColumnFlags_WidthFixed);
-      ImGui::TableSetupColumn("What it is", ImGuiTableColumnFlags_WidthStretch);
+      ImGui::TableSetupColumn(Lbl(Tr("File"), "File").c_str(), ImGuiTableColumnFlags_WidthFixed);
+      ImGui::TableSetupColumn(Lbl(Tr("Size"), "Size").c_str(), ImGuiTableColumnFlags_WidthFixed);
+      ImGui::TableSetupColumn(Lbl(Tr("What it is"), "What it is").c_str(), ImGuiTableColumnFlags_WidthStretch);
       ImGui::TableHeadersRow();
       for (const reports::BundleFile& f : sessionBundle_.files) {
         ImGui::TableNextRow();
         ImGui::TableSetColumnIndex(0);
         ImGui::TextUnformatted(f.name.c_str());
         ImGui::TableSetColumnIndex(1);
-        ImGui::TextUnformatted(f.from.empty() ? "small" : reports::SizeText(f.size).c_str());
+        ImGui::TextUnformatted(f.from.empty() ? Tr("small") : reports::SizeText(f.size).c_str());
         ImGui::TableSetColumnIndex(2);
         ImGui::PushStyleColor(ImGuiCol_Text, kDim);
-        ImGui::TextWrapped("%s", f.description.c_str());
+        ImGui::TextWrapped("%s", Tr(f.description).c_str());
         ImGui::PopStyleColor();
       }
       ImGui::EndTable();
     }
   }
-  if (sessions_.empty() && ImGui::Button("Close")) {
+  if (sessions_.empty() && ImGui::Button(Lbl(Tr("Close"), "Close").c_str())) {
     open = false;
   }
   if (!open) {
     ImGui::CloseCurrentPopup();
     sessionOpen_ = false;
   }
+  if (controller_) {
+    DrawFileBrowser();
+  }
   ImGui::EndPopup();
 }
 
 void App::DrawReportsPage() {
-  PageTitle("Reports", "Reports help find problems in the game. They stay on this PC, in their folder: nothing is "
-                       "ever sent anywhere. To share one, export it and send the file yourself.");
+  PageTitle(Tr("Reports"), Tr("Reports help find problems in the game. They stay on this PC, in their folder: nothing is "
+                              "ever sent anywhere. To share one, export it and send the file yourself."));
   LookAtReports(false);
-  if (ImGui::Button("Open folder")) {
+  if (ImGui::Button(Lbl(Tr("Open folder"), "Open folder").c_str())) {
     std::error_code ec;
     fs::create_directories(game_.reportsFolder, ec);
     OpenInSystem(game_.reportsFolder);
   }
   ImGui::SameLine();
-  if (ImGui::Button("Look again")) {
+  if (ImGui::Button(Lbl(Tr("Look again"), "Look again").c_str())) {
     LookAtReports(true);
   }
   if (!game_.logsFolder.empty() || !game_.recordingsFolder.empty()) {
     ImGui::SameLine();
-    if (ImGui::Button("Save my last play session...")) {
+    if (ImGui::Button(Lbl(Tr("Save my last play session..."), "Save my last play session...").c_str())) {
       sessionOpen_ = true;
       sessionSel_ = 0;
       sessions_.clear();
     }
-    if (ImGui::IsItemHovered()) {
-      ImGui::SetTooltip("The game stopped or froze and made no report? This saves the last time you played as one "
-                        "file to give to the developer.");
+    if (Hot()) {
+      ImGui::SetTooltip("%s", Tr("The game stopped or froze and made no report? This saves the last time you played as "
+                                 "one file to give to the developer."));
     }
     DrawSessionWindow();
   }
@@ -4631,12 +5851,12 @@ void App::DrawReportsPage() {
   if (reports_.empty()) {
     BeginCard("##noreports");
     ImGui::PushFont(fonts_.heading);
-    ImGui::TextUnformatted("No reports yet");
+    ImGui::TextUnformatted(Tr("No reports yet"));
     ImGui::PopFont();
-    Dim("If something looks wrong while you play, press F10 in the game window. The game then saves a report: a "
-        "picture of the game, your recent button presses and what the game program wrote about itself, so a "
-        "developer can see and replay that moment.");
-    Dim("If the game crashes or stops responding, it makes a report by itself. Reports appear here.");
+    Dim(Tr("If something looks wrong while you play, press F10 in the game window. The game then saves a report: a "
+           "picture of the game, your recent button presses and what the game program wrote about itself, so a "
+           "developer can see and replay that moment."));
+    Dim(Tr("If the game crashes or stops responding, it makes a report by itself. Reports appear here."));
     EndCard();
     if (!reportMessage_.empty()) {
       ImGui::TextColored(reportOk_ ? kGood : kBad, "%s", reportMessage_.c_str());
@@ -4660,7 +5880,7 @@ void App::DrawReportsPage() {
       reportSel_ = r.name;
       reportMessage_.clear();
     }
-    if (ImGui::IsItemHovered() && !r.moment.empty()) {
+    if (Hot() && !r.moment.empty()) {
       ImGui::SetTooltip("%s", r.moment.c_str());
     }
     if (ImGui::IsItemFocused() && !selected && ImGui::GetIO().NavVisible) {
@@ -4670,11 +5890,11 @@ void App::DrawReportsPage() {
     ImDrawList* dl = ImGui::GetWindowDrawList();
     const float x = pos.x + 6 * scale_;
     dl->AddText(ImVec2(x, pos.y + 2 * scale_), U32(kText), r.when.c_str());
-    const char* kind = reports::KindName(r.kind);
+    const char* kind = KindWord(r.kind);
     const float kw = ImGui::CalcTextSize(kind).x;
     const float right = pos.x + ImGui::GetContentRegionAvail().x - 6 * scale_;
     dl->AddText(ImVec2(right - kw, pos.y + 2 * scale_), U32(kindColour(r.kind)), kind);
-    const std::string second = (r.moment.empty() ? std::string("moment unknown") : r.moment) + "  -  " +
+    const std::string second = (r.moment.empty() ? std::string(Tr("moment unknown")) : r.moment) + "  -  " +
                                reports::SizeText(r.size);
     dl->PushClipRect(ImVec2(x, pos.y), ImVec2(right, pos.y + lineH * 2 + 8 * scale_), true);
     dl->AddText(ImVec2(x, pos.y + 4 * scale_ + lineH), U32(kDim), second.c_str());
@@ -4687,21 +5907,21 @@ void App::DrawReportsPage() {
   ImGui::BeginChild("##report", ImVec2(0, height), ImGuiChildFlags_NavFlattened);
   const reports::Report* r = SelectedReport();
   if (r == nullptr) {
-    Dim("Choose a report on the left.");
+    Dim(Tr("Choose a report on the left."));
     ImGui::EndChild();
     return;
   }
   ImGui::PushFont(fonts_.heading);
-  ImGui::TextColored(kindColour(r->kind), "%s", reports::KindName(r->kind));
+  ImGui::TextColored(kindColour(r->kind), "%s", KindWord(r->kind));
   ImGui::SameLine();
   ImGui::TextUnformatted(r->when.c_str());
   ImGui::PopFont();
-  Dim(reports::KindExplained(r->kind));
+  Dim(KindText(r->kind));
   if (!r->happened.empty()) {
-    ImGui::TextWrapped("What happened: %s", r->happened.c_str());
+    ImGui::TextWrapped(Tr("What happened: %s"), r->happened.c_str());
   }
   if (!r->moment.empty()) {
-    ImGui::TextWrapped("Where in the game: %s", r->moment.c_str());
+    ImGui::TextWrapped(Tr("Where in the game: %s"), r->moment.c_str());
   }
   ImGui::Spacing();
   bool hasShot = false, hasDump = false;
@@ -4710,37 +5930,41 @@ void App::DrawReportsPage() {
     hasDump |= f.dump;
   }
 
-  Heading("Export");
+  Heading(Tr("Export"));
   BeginCard("##export");
-  Dim("Makes one .zip file of this report, with a name and in a place you choose, to send to a developer "
-      "yourself. The report here stays as it is.");
-  ImGui::Checkbox((std::string("Hide my ") + sys::UserNameWords()).c_str(), &exportOptions_.hideUserName);
-  Dim(std::string("Your ") + sys::UserNameWords() +
-      " appears in folder names in the log, the settings and the report's info (" + sys::HomeFolderExample() +
-      "). With this on, the exported copy says %USERNAME% instead.");
+  Dim(Tr("Makes one .zip file of this report, with a name and in a place you choose, to send to a developer "
+         "yourself. The report here stays as it is."));
+  ImGui::Checkbox(Lbl(Fmt(Tr("Hide my %s"), SysWord(sys::UserNameWords()).c_str()).c_str(),
+                      (std::string("Hide my ") + sys::UserNameWords()).c_str())
+                      .c_str(),
+                  &exportOptions_.hideUserName);
+  Dim(Fmt(Tr("Your %s appears in folder names in the log, the settings and the report's info (%s). With this on, the "
+             "exported copy says %%USERNAME%% instead."),
+          SysWord(sys::UserNameWords()).c_str(), sys::HomeFolderExample()));
   if (!hasDump) {
     ImGui::BeginDisabled();
   }
   bool dump = exportOptions_.includeDump && hasDump;
-  if (ImGui::Checkbox("Include the crash dump", &dump)) {
+  if (ImGui::Checkbox(Lbl(Tr("Include the crash dump"), "Include the crash dump").c_str(), &dump)) {
     exportOptions_.includeDump = dump;
   }
   if (!hasDump) {
     ImGui::EndDisabled();
   }
-  Dim(hasDump ? "A crash dump is a snapshot of the game program's memory when it crashed. It helps a lot in finding "
-                "the cause, but it may contain bits of whatever was in memory (your user name too), so it is left "
-                "out unless you tick this."
-              : "This report has no crash dump (only crashes, stops and hangs make one).");
-  Dim("Always included: the picture of the game (the screenshot shows only the game window), the recording of "
-      "your button presses, the log, your settings and mod list.");
+  Dim(hasDump ? Tr("A crash dump is a snapshot of the game program's memory when it crashed. It helps a lot in finding "
+                   "the cause, but it may contain bits of whatever was in memory (your user name too), so it is left "
+                   "out unless you tick this.")
+              : Tr("This report has no crash dump (only crashes, stops and hangs make one)."));
+  Dim(Tr("Always included: the picture of the game (the screenshot shows only the game window), the recording of "
+         "your button presses, the log, your settings and mod list."));
   ImGui::Spacing();
-  if (ImGui::Button("Export...")) {
-    static const SDL_DialogFileFilter kZip[] = {{"Zip files", "zip"}};
+  if (ImGui::Button(Lbl(Tr("Export..."), "Export...").c_str())) {
+    static SDL_DialogFileFilter kZip[1];
+    kZip[0] = {Tr("Zip files"), "zip"};
     const fs::path start = sys::KnownFolder(sys::Folder::Documents, false);
     const std::string where = Utf8(start / PathOf(reports::ExportName(*r)));
     reportMessage_.clear();
-    SDL_ShowSaveFileDialog(
+    ShowSaveDialog(
         [](void* user, const char* const* files, int) {
           App* app = static_cast<App*>(user);
           if (files != nullptr && files[0] != nullptr) {
@@ -4752,20 +5976,21 @@ void App::DrawReportsPage() {
         this, window_, kZip, 1, where.c_str());
   }
   ImGui::SameLine();
-  if (ImGui::Button("Delete...")) {
-    ImGui::OpenPopup("Delete this report?");
+  if (ImGui::Button(Lbl(Tr("Delete..."), "Delete...").c_str())) {
+    ImGui::OpenPopup("###deletereport");
   }
-  if (ImGui::BeginPopupModal("Delete this report?", nullptr, ImGuiWindowFlags_AlwaysAutoResize)) {
-    ImGui::Text("Delete the report of %s (%s)?", r->when.c_str(), reports::KindName(r->kind));
-    Dim("Its folder and the zip file next to it are deleted for good. Copies you exported stay.");
-    if (ImGui::Button("Delete it")) {
+  if (ImGui::BeginPopupModal(Lbl(Tr("Delete this report?"), "deletereport").c_str(), nullptr, ImGuiWindowFlags_AlwaysAutoResize)) {
+    ImGui::Text(Tr("Delete the report of %s (%s)?"), r->when.c_str(), KindWord(r->kind));
+    Dim(Tr("Its folder and the zip file next to it are deleted for good. Copies you exported stay."));
+    if (ImGui::Button(Lbl(Tr("Delete it"), "Delete it").c_str())) {
       ImGui::CloseCurrentPopup();
       DeleteReport();
     }
     ImGui::SameLine();
-    if (ImGui::Button("Keep it")) {
+    if (ImGui::Button(Lbl(Tr("Keep it"), "Keep it").c_str()) || BackPressed()) {
       ImGui::CloseCurrentPopup();
     }
+    ImGui::SetItemDefaultFocus();
     ImGui::EndPopup();
   }
   if (!reportMessage_.empty()) {
@@ -4799,11 +6024,11 @@ void App::DrawReportsPage() {
     ImGui::Spacing();
   }
 
-  Heading("What's inside");
+  Heading(Tr("What's inside"));
   if (ImGui::BeginTable("##files", 3, ImGuiTableFlags_RowBg | ImGuiTableFlags_BordersInnerH | ImGuiTableFlags_PadOuterX)) {
-    ImGui::TableSetupColumn("File", ImGuiTableColumnFlags_WidthFixed);
-    ImGui::TableSetupColumn("Size", ImGuiTableColumnFlags_WidthFixed);
-    ImGui::TableSetupColumn("What it is", ImGuiTableColumnFlags_WidthStretch);
+    ImGui::TableSetupColumn(Lbl(Tr("File"), "File").c_str(), ImGuiTableColumnFlags_WidthFixed);
+    ImGui::TableSetupColumn(Lbl(Tr("Size"), "Size").c_str(), ImGuiTableColumnFlags_WidthFixed);
+    ImGui::TableSetupColumn(Lbl(Tr("What it is"), "What it is").c_str(), ImGuiTableColumnFlags_WidthStretch);
     ImGui::TableHeadersRow();
     for (const reports::File& f : r->files) {
       ImGui::TableNextRow();
@@ -4813,12 +6038,12 @@ void App::DrawReportsPage() {
       ImGui::TextUnformatted(reports::SizeText(f.size).c_str());
       ImGui::TableSetColumnIndex(2);
       ImGui::PushStyleColor(ImGuiCol_Text, kDim);
-      ImGui::TextWrapped("%s", f.description.c_str());
+      ImGui::TextWrapped("%s", Tr(f.description).c_str());
       ImGui::PopStyleColor();
     }
     ImGui::EndTable();
   }
-  if (!r->info.empty() && ImGui::TreeNode("The report's info.txt")) {
+  if (!r->info.empty() && ImGui::TreeNode(Lbl(Tr("The report's info.txt"), "The report's info.txt").c_str())) {
     std::string info = r->info;
     ImGui::InputTextMultiline("##info", &info, ImVec2(-1, 220 * scale_), ImGuiInputTextFlags_ReadOnly);
     ImGui::TreePop();
@@ -4828,14 +6053,25 @@ void App::DrawReportsPage() {
 }
 
 void App::DrawBottomBar() {
-  const float playWidth = 220 * scale_, playHeight = 56 * scale_;
+  const float playHeight = 56 * scale_;
+  float playWidth = 220 * scale_;
+  ImGui::PushFont(fonts_.play);
+  for (const char* t : {Tr("Play"), Tr("Running..."), Tr("Starting..."), Tr("Preparing...")}) {
+    playWidth = std::max(playWidth, ImGui::CalcTextSize(t).x + fonts_.play->FontSize * 0.62f + 12 * scale_ + 56 * scale_);
+  }
+  ImGui::PopFont();
+  float label = 62 * scale_;
+  ImGui::PushFont(fonts_.caption);
+  for (const char* t : {Tr("DISC"), Tr("PRESET"), Tr("MODS"), Tr("LANGUAGE"), Tr("SAVE")}) {
+    label = std::max(label, ImGui::CalcTextSize(t).x + 14 * scale_);
+  }
+  ImGui::PopFont();
   ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(18 * scale_, 12 * scale_));
   ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(10 * scale_, 5 * scale_));
-  ImGui::BeginChild("##bottom", ImVec2(0, 0), ImGuiChildFlags_Borders | ImGuiChildFlags_AlwaysUseWindowPadding,
+  ImGui::BeginChild("##bottom", ImVec2(0, 0), ImGuiChildFlags_Borders | ImGuiChildFlags_AlwaysUseWindowPadding | ImGuiChildFlags_NavFlattened,
                     ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse);
   const float right = ImGui::GetCursorPosX() + ImGui::GetContentRegionAvail().x;
   const float top = ImGui::GetCursorPosY();
-  const float label = 62 * scale_;
   const auto Label = [&](const char* text) {
     const float x = ImGui::GetCursorPosX();
     ImGui::PushFont(fonts_.caption);
@@ -4844,54 +6080,135 @@ void App::DrawBottomBar() {
     ImGui::PopFont();
     ImGui::SameLine(x + label);
   };
+  const float noteRight = right - playWidth - 28 * scale_ -
+                          (ImGui::GetFrameHeight() + ImGui::GetStyle().ItemInnerSpacing.x +
+                           ImGui::CalcTextSize(Tr("Keep this window open")).x) -
+                          14 * scale_;
+  const auto Note = [&](const char* text, float reserve) {
+    const float room = std::max(60 * scale_, noteRight - ImGui::GetCursorPosX() - reserve);
+    std::string shownText = text;
+    if (ImGui::CalcTextSize(text).x > room) {
+      while (shownText.size() > 1 && ImGui::CalcTextSize((shownText + "...").c_str()).x > room) {
+        shownText.pop_back();
+        while (shownText.size() > 1 && (static_cast<unsigned char>(shownText.back()) & 0xC0) == 0x80) {
+          shownText.pop_back();
+        }
+      }
+      shownText += "...";
+    }
+    ImGui::TextColored(kDim, "%s", shownText.c_str());
+    if (shownText != text && ImGui::IsItemHovered()) {
+      ImGui::SetTooltip("%s", text);
+    }
+  };
   ImGui::BeginGroup();
   const std::string path = DiscPath();
   {
     std::lock_guard<std::mutex> lock(bg_.mutex);
     const bool have = bg_.haveVerdict && bg_.discPath == path;
-    Label("DISC");
+    Label(Tr("DISC"));
     if (path.empty()) {
-      ImGui::TextColored(kWarn, "none chosen");
+      ImGui::TextColored(kWarn, "%s", Tr("none chosen"));
     } else {
       const std::string name = Utf8(PathOf(path).filename());
       const ImVec4 color = !have ? kBusy
                            : bg_.verdict.kind == DiscVerdict::Kind::Problem ? kBad
                            : bg_.verdict.kind == DiscVerdict::Kind::Warning ? kWarn
                                                                            : kGood;
-      const char* state = !have ? "checking..."
-                          : bg_.verdict.kind == DiscVerdict::Kind::Problem ? "can't be used"
-                          : bg_.verdict.kind == DiscVerdict::Kind::Warning ? "changed or damaged"
-                                                                          : "OK";
+      const char* state = !have ? Tr("checking...")
+                          : bg_.verdict.kind == DiscVerdict::Kind::Problem ? Tr("can't be used")
+                          : bg_.verdict.kind == DiscVerdict::Kind::Warning ? Tr("changed or damaged")
+                                                                          : Tr("OK");
       ImGui::TextColored(color, "%s (%s)", name.c_str(), state);
     }
   }
-  Label("PRESET");
-  if (registry_.IsOriginal()) {
-    ImGui::TextUnformatted("Original: the game exactly as on the GameCube");
-  } else {
-    const size_t n = registry_.NotOriginal().size();
-    ImGui::Text("%s: %zu setting%s different from the GameCube game", ui::PresetName(registry_.CurrentPreset()), n,
-                n == 1 ? "" : "s");
+  if (!controller_) {
+    Label(Tr("PRESET"));
+    if (registry_.IsOriginal()) {
+      ImGui::TextUnformatted(Tr("Original: the game exactly as on the GameCube"));
+    } else {
+      const size_t n = registry_.NotOriginal().size();
+      ImGui::Text(n == 1 ? Tr("%s: %zu setting different from the GameCube game")
+                         : Tr("%s: %zu settings different from the GameCube game"),
+                  Tr(ui::PresetName(registry_.CurrentPreset())), n);
+    }
   }
   int on = 0;
   for (const auto& m : mods_.Active().mods) {
     on += m.second ? 1 : 0;
   }
-  Label("MODS");
+  Label(Tr("MODS"));
   if (on == 0) {
-    ImGui::TextUnformatted("none on");
+    ImGui::TextUnformatted(Tr("none on"));
   } else {
-    ImGui::Text("%d on (list \"%s\")", on, mods_.active.c_str());
+    ImGui::Text(Tr("%d on (list \"%s\")"), on, mods_.active.c_str());
+  }
+  if (LanguageRowOn()) {
+    Label(Tr("LANGUAGE"));
+    const auto offered = game_.languages.offered();
+    const std::string current = registry_.ValueText(registry_.Find(game_.languages.setting));
+    static const char* const kLanguageIds[] = {"us", "ge", "fr", "it", "sp"};
+    const auto inPack = [&](const std::string& id) {
+      return std::any_of(offered.begin(), offered.end(), [&](const auto& o) { return o.first == id; });
+    };
+    const std::string ownId = offered.empty() ? std::string("us") : offered.front().first;
+    const bool known = std::any_of(std::begin(kLanguageIds), std::end(kLanguageIds), [&](const char* id) { return current == id; });
+    std::string shown = known ? std::string(engine::i18n::LanguageName(current)) : current;
+    float comboWidth = 170 * scale_;
+    for (const char* id : kLanguageIds) {
+      comboWidth = std::max(comboWidth, ImGui::CalcTextSize(engine::i18n::LanguageName(id)).x +
+                                            ImGui::GetStyle().FramePadding.x * 2 + ImGui::GetFrameHeight() + 8 * scale_);
+    }
+    ImGui::SetNextItemWidth(comboWidth);
+    if (ImGui::BeginCombo("##language", shown.c_str())) {
+      for (const char* id : kLanguageIds) {
+        if (ImGui::Selectable(Lbl(engine::i18n::LanguageName(id), id).c_str(), current == id)) {
+          registry_.SetEnum(game_.languages.setting, id);
+          SaveSettingsIfChanged();
+          languageChanged_ = true;
+        }
+      }
+      ImGui::EndCombo();
+    }
+    ImGui::SameLine();
+    const bool hasText = current == ownId || inPack(current);
+    if (languageChanged_) {
+      ImGui::TextColored(kDim, "%s", Tr("Use it:"));
+      ImGui::SameLine();
+      ImGui::BeginDisabled(gameRunning_ || playWhenDrawn_);
+      if (ImGui::SmallButton(Lbl(Tr("Start the game now"), "Start the game now").c_str())) {
+        languageChanged_ = false;
+        Play(false);
+      }
+      ImGui::EndDisabled();
+      if (gameRunning_ && ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled)) {
+        ImGui::SetTooltip("%s", Tr("The game is running: close it (or use Restart now in its SETTINGS) and start it again."));
+      }
+      ImGui::SameLine();
+      if (ImGui::SmallButton(Lbl(Tr("Next start"), "Next start").c_str())) languageChanged_ = false;
+    } else if (hasText) {
+      Note(Tr("Takes effect the next time the game starts."), 0);
+    } else {
+      const bool noPack = offered.size() <= 1 && !game_.extra.sources.empty();
+      Note(Tr("Game text needs the European disc pack; menus added by this port are translated."),
+           noPack ? ImGui::CalcTextSize(Tr("Extra assets")).x + ImGui::GetStyle().FramePadding.x * 2 +
+                        ImGui::GetStyle().ItemSpacing.x
+                  : 0.0f);
+      if (noPack) {
+        ImGui::SameLine();
+        if (ImGui::SmallButton(Lbl(Tr("Extra assets"), "Extra assets").c_str())) page_ = Page::Extra;
+      }
+    }
   }
   if (SlotsOn()) {
-    Label("SAVE");
+    Label(Tr("SAVE"));
     ImGui::TextUnformatted(slots_.Active().name.c_str());
     for (size_t i = 0; i < slots_.slots.size() && i < slotRows_.size(); i++) {
       if (slots_.slots[i].id == slots_.Active().id) {
         const GameInfo::SaveRow& row = slotRows_[i];
         ImGui::SameLine();
         ImGui::TextColored(kDim, "%s", (row.found ? row.who + (row.time.empty() ? "" : ", " + row.time)
-                                                  : row.who.empty() ? std::string("empty") : row.who).c_str());
+                                                  : row.who.empty() ? std::string(Tr("empty")) : Tr(row.who)).c_str());
       }
     }
   }
@@ -4903,10 +6220,10 @@ void App::DrawBottomBar() {
   const float playTop = top + std::max(0.0f, (rowsHeight - playHeight) * 0.5f);
   bool stay = registry_.Bool(kStaySetting).Get();
   const float checkWidth = ImGui::GetFrameHeight() + ImGui::GetStyle().ItemInnerSpacing.x +
-                           ImGui::CalcTextSize("Keep this window open").x;
+                           ImGui::CalcTextSize(Tr("Keep this window open")).x;
   ImGui::SetCursorPos(ImVec2(right - playWidth - 28 * scale_ - checkWidth,
                              playTop + (playHeight - ImGui::GetFrameHeight()) * 0.5f));
-  if (ImGui::Checkbox("Keep this window open", &stay)) {
+  if (ImGui::Checkbox(Lbl(Tr("Keep this window open"), "Keep this window open").c_str(), &stay)) {
     registry_.SetBool(kStaySetting, stay);
   }
   ImGui::SetCursorPos(ImVec2(right - playWidth, playTop));
@@ -4915,13 +6232,14 @@ void App::DrawBottomBar() {
   bool playable = !gameRunning_ && DiscPlayable(why);
   if (playable && shadersPreparing) {
     playable = false;
-    why = "Preparing the game's shaders for this PC (once; see the Disc page).";
+    why = Tr("Preparing the game's shaders for this PC (once; see the Disc page).");
   }
-  if (PlayButton(gameRunning_ ? "Running..." : playWhenDrawn_ ? "Starting..." : shadersPreparing ? "Preparing..." : "Play",
+  if (PlayButton(gameRunning_ ? Tr("Running...") : playWhenDrawn_ ? Tr("Starting...") : shadersPreparing ? Tr("Preparing...") : Tr("Play"),
                  ImVec2(playWidth, playHeight), playable && !playWhenDrawn_)) {
     Play(false);
   }
-  if (!playable && !gameRunning_ && ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled)) {
+  playWhy_ = !playable && !gameRunning_ ? why : std::string();
+  if (!playable && !gameRunning_ && Hot(ImGuiHoveredFlags_AllowWhenDisabled)) {
     ImGui::SetTooltip("%s", why.c_str());
   }
   ImGui::SetCursorPosY(std::max(groupBottom, playTop + playHeight + 4 * scale_));
@@ -4930,31 +6248,33 @@ void App::DrawBottomBar() {
   } else if (!saveError_.empty()) {
     ImGui::TextColored(kBad, "%s", saveError_.c_str());
   } else if (gameRunning_) {
-    ImGui::TextColored(kGood, "The game is running. Settings changed now are used the next time it starts.");
+    ImGui::TextColored(kGood, "%s", Tr("The game is running. Settings changed now are used the next time it starts."));
+  } else if (controller_ && !playWhy_.empty()) {
+    ImGui::TextColored(kWarn, "%s", playWhy_.c_str());
   }
   ImGui::EndChild();
   ImGui::PopStyleVar(2);
 
   if (askStartAnyway_) {
-    ImGui::OpenPopup("Start anyway?");
+    ImGui::OpenPopup("###startanyway");
     askStartAnyway_ = false;
   }
-  if (ImGui::BeginPopupModal("Start anyway?", nullptr, ImGuiWindowFlags_AlwaysAutoResize)) {
+  if (ImGui::BeginPopupModal(Lbl(Tr("Start anyway?"), "startanyway").c_str(), nullptr, ImGuiWindowFlags_AlwaysAutoResize)) {
     std::string text;
     {
       std::lock_guard<std::mutex> lock(bg_.mutex);
       text = bg_.verdict.text;
     }
     ImGui::PushTextWrapPos(560 * scale_);
-    ImGui::TextUnformatted(text.c_str());
+    ImGui::TextUnformatted(Tr(text).c_str());
     ImGui::PopTextWrapPos();
     ImGui::Spacing();
-    if (ImGui::Button("Start anyway")) {
+    if (ImGui::Button(Lbl(Tr("Start anyway"), "Start anyway").c_str())) {
       ImGui::CloseCurrentPopup();
       Play(true);
     }
     ImGui::SameLine();
-    if (ImGui::Button("Don't start")) {
+    if (ImGui::Button(Lbl(Tr("Don't start"), "Don't start").c_str()) || BackPressed()) {
       ImGui::CloseCurrentPopup();
     }
     ImGui::EndPopup();
@@ -4976,16 +6296,35 @@ void App::Frame() {
                ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoSavedSettings |
                    ImGuiWindowFlags_NoBringToFrontOnFocus);
   DrawHeader();
-  const bool message = !playError_.empty() || !saveError_.empty() || gameRunning_;
-  const int rows = SlotsOn() ? 4 : 3;
+  promptH_ = controller_ ? 46 * scale_ : 0.0f;
+  const bool message = !playError_.empty() || !saveError_.empty() || gameRunning_ || (controller_ && !playWhy_.empty());
+  const int rows = (SlotsOn() ? 4 : 3) - (controller_ ? 1 : 0) + (LanguageRowOn() ? 1 : 0);
   const float bottom = rows * ImGui::GetFrameHeight() + ((rows - 1) * 5 + 2 * 12 + 4 + 6) * scale_ +
-                       ImGui::GetStyle().ItemSpacing.y + (message ? ImGui::GetTextLineHeightWithSpacing() : 0.0f);
+                       ImGui::GetStyle().ItemSpacing.y + (message ? ImGui::GetTextLineHeightWithSpacing() : 0.0f) +
+                       std::max(0.0f, promptH_ - ImGui::GetStyle().WindowPadding.y);
   const float height = ImGui::GetContentRegionAvail().y - bottom;
+  PadShortcuts();
+  if (BackPressed() && !ImGui::IsAnyItemActive() &&
+      !ImGui::IsPopupOpen(0u, ImGuiPopupFlags_AnyPopupId | ImGuiPopupFlags_AnyPopupLevel) && !files_.IsOpen()) {
+    focusPage_ = true;
+  }
+  if (controller_ && focusInNav_ && padIn_.Pressed(pad::Btn::Right) && !ImGui::IsAnyItemActive() &&
+      !ImGui::IsPopupOpen(0u, ImGuiPopupFlags_AnyPopupId | ImGuiPopupFlags_AnyPopupLevel)) {
+    enterDelay_ = 3;
+  }
+  if (enterDelay_ > 0 && --enterDelay_ == 0) {
+    enterPage_ = true;
+  }
   DrawNav(height);
   ImGui::SameLine(0, 14 * scale_);
   ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(26 * scale_, 22 * scale_));
-  ImGui::BeginChild("##page", ImVec2(0, height), ImGuiChildFlags_Borders | ImGuiChildFlags_AlwaysUseWindowPadding, 0);
+  ImGui::BeginChild("##page", ImVec2(0, height),
+                    ImGuiChildFlags_Borders | ImGuiChildFlags_AlwaysUseWindowPadding | ImGuiChildFlags_NavFlattened, 0);
   ImGui::PopStyleVar();
+  if (enterPage_) {
+    pad::EnterCurrentWindow();
+    enterPage_ = false;
+  }
   switch (page_) {
   case Page::Disc: DrawDiscPage(); break;
   case Page::Extra: DrawExtraPage(); break;
@@ -5003,6 +6342,10 @@ void App::Frame() {
   DrawNotOpenedWindow();
   DrawWelcomeWindow();
   DrawUpdateWindows();
+  DrawPadUi();
+  if (controller_) {
+    pad::WarnAboutChildWindows();
+  }
   ImGui::End();
   if (ground) {
     ImGui::PopStyleColor(2);
@@ -5013,7 +6356,8 @@ void App::Frame() {
 int App::Run() {
   LoadSettings();
   options_.gameId = game_.gameId;
-  options_.hidden = {kDiscSetting, kStaySetting, kIconSetting, kGroundSetting, kUpdateSetting};
+  options_.hidden = {kDiscSetting, kStaySetting, kIconSetting, kGroundSetting, kUpdateSetting,
+                     "gameplay.physical_special_split"};
   options_.hiddenPrefixes.push_back("system.extra_disc.");
   script_ = Split(game_.script, '|');
   ReloadMods();
@@ -5033,16 +6377,33 @@ int App::Run() {
   if (scale_ <= 0.0f) {
     scale_ = 1.0f;
   }
+  baseScale_ = scale_;
+  {
+    const char* env = std::getenv("XD_LAUNCHER_PAD");
+    const std::string mode = env != nullptr ? Lower(env) : std::string();
+    if (mode == "on" || mode == "1") {
+      controller_ = controllerFixed_ = true;
+    } else if (mode == "off" || mode == "0") {
+      controllerFixed_ = true;
+    } else {
+      const char* deck = std::getenv("SteamDeck");
+      const char* desktop = std::getenv("XDG_CURRENT_DESKTOP");
+      controller_ = (deck != nullptr && std::string(deck) == "1") || std::getenv("GAMESCOPE_WAYLAND_DISPLAY") != nullptr ||
+                    (desktop != nullptr && Lower(desktop).find("gamescope") != std::string::npos);
+    }
+    scale_ = baseScale_ * (controller_ ? kControllerScale : 1.0f);
+    focusPage_ = controller_;
+  }
   const std::string title = (game_.windowTitle.empty() ? game_.title : game_.windowTitle) +
                             (game_.updates.version.empty() ? std::string() : " " + game_.updates.version) +
                             " - launcher";
-  window_ = SDL_CreateWindow(title.c_str(), static_cast<int>(1100 * scale_), static_cast<int>(760 * scale_),
+  window_ = SDL_CreateWindow(title.c_str(), static_cast<int>(1100 * baseScale_), static_cast<int>(760 * baseScale_),
                              SDL_WINDOW_RESIZABLE | SDL_WINDOW_HIDDEN | SDL_WINDOW_HIGH_PIXEL_DENSITY);
   if (window_ == nullptr) {
     Log("no window: " + std::string(SDL_GetError()));
     return 1;
   }
-  SDL_SetWindowMinimumSize(window_, static_cast<int>(820 * scale_), static_cast<int>(560 * scale_));
+  SDL_SetWindowMinimumSize(window_, static_cast<int>(820 * baseScale_), static_cast<int>(560 * baseScale_));
   renderer_ = SDL_CreateRenderer(window_, nullptr);
   if (renderer_ == nullptr) {
     Log("no renderer: " + std::string(SDL_GetError()));
@@ -5086,12 +6447,14 @@ int App::Run() {
   ImGui::CreateContext();
   ImGuiIO& io = ImGui::GetIO();
   io.IniFilename = nullptr;
-  io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard;
+  io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard | ImGuiConfigFlags_NavEnableGamepad;
   ApplyStyle(scale_);
   fonts_ = LoadFonts(scale_);
   options_.headingFont = fonts_.heading;
+  options_.textInput = [](const char* label, std::string* text) { return pad::InputText(label, text); };
   ImGui_ImplSDL3_InitForSDLRenderer(window_, renderer_);
   ImGui_ImplSDLRenderer3_Init(renderer_);
+  ImGui_ImplSDL3_SetGamepadMode(ImGui_ImplSDL3_GamepadMode_Manual, nullptr, 0);
 
   if (!DiscPath().empty()) {
     StartWorker(DiscPath());
@@ -5123,6 +6486,7 @@ int App::Run() {
       presetPending_ = true;
       SaveLauncherState();
       askPreset_ = true;
+      welcomeFromStart_ = true;
       Log("first start: asking which preset");
     }
   }
@@ -5138,8 +6502,8 @@ int App::Run() {
 
   while (!quit_) {
     SDL_Event e;
-    const bool busy =
-        bg_.busy || up_.busy || !script_.empty() || ImGui::IsAnyItemActive() || page_ == Page::Controls;
+    const bool busy = bg_.busy || up_.busy || !script_.empty() || ImGui::IsAnyItemActive() || page_ == Page::Controls ||
+                      padIn_.AnyDown() || osk_.Open() || !padQueue_.empty();
     if (SDL_WaitEventTimeout(&e, busy ? 16 : 100)) {
       do {
         bool toImGui = true;
@@ -5166,7 +6530,21 @@ int App::Run() {
             }
           }
           break;
+        case SDL_EVENT_MOUSE_MOTION:
+          if (!controllerFixed_ && controller_ && std::fabs(e.motion.xrel) + std::fabs(e.motion.yrel) >= 3.0f) {
+            SetController(false);
+          }
+          break;
+        case SDL_EVENT_MOUSE_BUTTON_DOWN:
+        case SDL_EVENT_MOUSE_WHEEL:
+          if (!controllerFixed_) {
+            SetController(false);
+          }
+          break;
         case SDL_EVENT_KEY_DOWN:
+          if (!e.key.repeat && !controllerFixed_ && !controls_.Listening() && !controls_.Testing()) {
+            SetController(false);
+          }
           if (controls_.Listening()) {
             if (!e.key.repeat) {
               controls_.FeedKey(registry_, static_cast<uint16_t>(e.key.scancode));
@@ -5199,6 +6577,28 @@ int App::Run() {
         }
       } while (SDL_PollEvent(&e));
     }
+    if (rescale_) {
+      ApplyScale();
+    }
+    padIn_.Update(PadInfos(), (SDL_GetWindowFlags(window_) & SDL_WINDOW_INPUT_FOCUS) != 0 && !gameRunning_);
+    if (padIn_.Activity() && !controllerFixed_) {
+      SetController(true);
+    }
+    if (!padQueue_.empty() && !padIn_.AnyDown() && ++padGap_ >= 3) {
+      padIn_.Virtual(padQueue_.front(), 2);
+      padQueue_.pop_front();
+      padGap_ = 0;
+    }
+    if (controls_.Listening()) {
+      if (listenStart_ == 0) {
+        listenStart_ = SDL_GetTicks();
+      } else if (controller_ && SDL_GetTicks() - listenStart_ > 8000) {
+        controls_.Cancel();
+      }
+    } else {
+      listenStart_ = 0;
+    }
+    files_.Poll();
     ExtraPoll();
     {
       std::lock_guard<std::mutex> lock(pickMutex_);
@@ -5229,10 +6629,26 @@ int App::Run() {
         std::swap(file, slotPicked_);
         std::swap(kind, slotPickedKind_);
       }
-      if (kind == 1) {
-        ImportSlot(file);
+      if (kind == 4) {
+        MonsPick(file);
+      } else if (kind == 3) {
+        TradePick(file);
+      } else if (kind == 1) {
+        ImportPick(file);
       } else if (kind == 2) {
         ExportSlot(file);
+      }
+    }
+    if (!importScan_.busy && !importScan_.logged) {
+      importScan_.logged = true;
+      std::lock_guard<std::mutex> lock(importScan_.mutex);
+      Log("import: found " + std::to_string(importScan_.offers.size()) + " Pokemon XD save(s) outside the port");
+      for (const GameInfo::ImportOffer& o : importScan_.offers) {
+        std::string time;
+        for (const auto& [label, value] : o.check.preview.facts) {
+          if (label == "Play time") time = value;
+        }
+        Log("import:   " + o.check.name + ", " + time + ", " + o.where);
       }
     }
     PollGame();
@@ -5243,9 +6659,15 @@ int App::Run() {
     FollowIcon();
     FollowUpdate();
     RunScript();
+    FollowLanguage();
 
     ImGui_ImplSDLRenderer3_NewFrame();
     ImGui_ImplSDL3_NewFrame();
+    osk_.Update(padIn_, io, controller_ && io.WantTextInput && !controls_.Listening(), SDL_GetTicks());
+    padIn_.Feed(io, osk_.Open() || controls_.Listening(), ImGui::IsAnyItemActive() && !io.WantTextInput);
+    if (controller_ && (padIn_.Activity() || padIn_.AnyDown())) {
+      ImGui::SetNavCursorVisible(true);
+    }
     ImGui::NewFrame();
     Frame();
     ImGui::Render();

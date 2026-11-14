@@ -25,6 +25,8 @@ void PortFreeze_Present(void (*pump)(void));
 
 void PortFreeze_End(void);
 
+double PortFreeze_FrozenSeconds(void);
+
 bool PortFreeze_Active(void);
 
 uint32_t PortFreeze_PictureCount(size_t* partial);

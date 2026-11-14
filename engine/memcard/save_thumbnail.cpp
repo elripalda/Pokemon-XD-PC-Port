@@ -97,7 +97,7 @@ std::vector<uint8_t> EncodePng(const Picture& pic) {
   return out;
 }
 
-bool DecodePng(const std::vector<uint8_t>& b, Picture& out, std::string& error) {
+bool DecodePng(const std::vector<uint8_t>& b, Picture& out, std::string& error, bool keepAlpha) {
   out = Picture();
   static const uint8_t sig[8] = {0x89, 'P', 'N', 'G', 0x0D, 0x0A, 0x1A, 0x0A};
   if (b.size() < 33 || std::memcmp(b.data(), sig, 8) != 0) {
@@ -158,7 +158,7 @@ bool DecodePng(const std::vector<uint8_t>& b, Picture& out, std::string& error) 
     for (uint32_t x = 0; x < w; x++) {
       uint8_t* q = out.rgba.data() + (static_cast<size_t>(y) * w + x) * 4;
       q[0] = cur[x * bpp], q[1] = cur[x * bpp + 1], q[2] = cur[x * bpp + 2];
-      q[3] = 255;
+      q[3] = keepAlpha && bpp == 4 ? cur[x * bpp + 3] : 255;
     }
     prev = cur;
   }
@@ -195,14 +195,14 @@ bool WriteFile(const fs::path& file, const Picture& picture, std::string& error)
   return true;
 }
 
-bool ReadFile(const fs::path& file, Picture& out, std::string& error) {
+bool ReadFile(const fs::path& file, Picture& out, std::string& error, bool keepAlpha) {
   std::ifstream in(file, std::ios::binary);
   if (!in) {
     error = "no picture";
     return false;
   }
   std::vector<uint8_t> bytes((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
-  return DecodePng(bytes, out, error);
+  return DecodePng(bytes, out, error, keepAlpha);
 }
 
 }

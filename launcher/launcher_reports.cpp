@@ -1,5 +1,6 @@
 #include "launcher_reports.h"
 
+#include "i18n.h"
 #include <port_zip.h>
 
 #if defined(_WIN32)
@@ -11,6 +12,7 @@
 #include <algorithm>
 #include <chrono>
 #include <climits>
+#include <cstdarg>
 #include <cstdio>
 #include <ctime>
 #include <cstdlib>
@@ -24,6 +26,66 @@
 namespace launcher::reports {
 
 namespace {
+
+using engine::i18n::Tr;
+
+std::string Fmt(const char* format, ...) {
+  char buf[2048];
+  va_list args;
+  va_start(args, format);
+  std::vsnprintf(buf, sizeof(buf), format, args);
+  va_end(args);
+  return buf;
+}
+
+struct Both {
+  std::string shown, english;
+};
+template <class... A> Both Say(const char* shown, const char* english, A... a) {
+  return {Fmt(shown, a...), Fmt(english, a...)};
+}
+template <class T> void SetDescription(T& f, const Both& b) {
+  f.description = b.shown;
+  f.english = b.english;
+}
+
+std::string SizeWith(uint64_t bytes, const char* mb, const char* kb, const char* by) {
+  char text[48];
+  if (bytes >= 1024ull * 1024) {
+    std::snprintf(text, sizeof text, mb, static_cast<double>(bytes) / (1024.0 * 1024.0));
+  } else if (bytes >= 1024) {
+    std::snprintf(text, sizeof text, kb, static_cast<unsigned long long>((bytes + 512) / 1024));
+  } else {
+    std::snprintf(text, sizeof text, by, static_cast<unsigned long long>(bytes));
+  }
+  return text;
+}
+std::string SizeEnglish(uint64_t bytes) { return SizeWith(bytes, "%.1f MB", "%llu KB", "%llu bytes"); }
+
+std::string DurationWith(int64_t seconds, const char* unknown, const char* s, const char* min, const char* hmin) {
+  if (seconds < 0) {
+    return unknown;
+  }
+  char text[48];
+  if (seconds < 60) {
+    std::snprintf(text, sizeof text, s, static_cast<long long>(seconds));
+  } else if (seconds < 3600) {
+    std::snprintf(text, sizeof text, min, static_cast<long long>(seconds / 60));
+  } else {
+    std::snprintf(text, sizeof text, hmin, static_cast<long long>(seconds / 3600), static_cast<long long>(seconds / 60 % 60));
+  }
+  return text;
+}
+std::string DurationEnglish(int64_t seconds) { return DurationWith(seconds, "?", "%lld s", "%lld min", "%lld h %02lld min"); }
+
+const char* KindNameEnglish(Report::Kind kind) {
+  switch (kind) {
+  case Report::Kind::Crash: return "Crash";
+  case Report::Kind::Stop: return "Stopped";
+  case Report::Kind::Stuck: return "Stuck";
+  default: return "F10 report";
+  }
+}
 
 namespace fs = std::filesystem;
 
@@ -87,36 +149,43 @@ bool IsTextFile(const fs::path& file) {
 int Describe(File& f) {
   const std::string n = Lower(f.name);
   if (n == "info.txt") {
-    f.description = "When and where it happened, and which version of the game program was running.";
+    SetDescription(f, Say(Tr("When and where it happened, and which version of the game program was running."),
+                          "When and where it happened, and which version of the game program was running."));
     return 0;
   }
   if (n == "screenshot.png") {
-    f.description = "A picture of the game window at that moment (only the game, not the rest of your screen).";
+    SetDescription(f, Say(Tr("A picture of the game window at that moment (only the game, not the rest of your screen)."),
+                          "A picture of the game window at that moment (only the game, not the rest of your screen)."));
     return 1;
   }
   if (n == "recording.txt") {
-    f.description = "Your button presses up to that moment, so a developer can play the same moment again.";
+    SetDescription(f, Say(Tr("Your button presses up to that moment, so a developer can play the same moment again."),
+                          "Your button presses up to that moment, so a developer can play the same moment again."));
     return 2;
   }
   if (n == "log.txt") {
-    f.description = "What the game program wrote about itself while it ran (its log).";
+    SetDescription(f, Say(Tr("What the game program wrote about itself while it ran (its log)."),
+                          "What the game program wrote about itself while it ran (its log)."));
     return 3;
   }
   if (n == "settings.ini") {
-    f.description = "Your settings.";
+    SetDescription(f, Say(Tr("Your settings."), "Your settings."));
     return 4;
   }
   if (n == "mods.ini") {
-    f.description = "Your mod list: which mods were switched on (not the mods themselves).";
+    SetDescription(f, Say(Tr("Your mod list: which mods were switched on (not the mods themselves)."),
+                          "Your mod list: which mods were switched on (not the mods themselves)."));
     return 5;
   }
   if (Lower(Utf8(fs::path(f.name).extension())) == ".dmp") {
     f.dump = true;
-    f.description = "Crash dump: a snapshot of the game program's memory at that moment. It helps a developer find "
-                    "the cause of a crash, but may contain bits of whatever was in memory.";
+    SetDescription(f, Say(Tr("Crash dump: a snapshot of the game program's memory at that moment. It helps a developer find "
+                             "the cause of a crash, but may contain bits of whatever was in memory."),
+                          "Crash dump: a snapshot of the game program's memory at that moment. It helps a developer find "
+                          "the cause of a crash, but may contain bits of whatever was in memory."));
     return 7;
   }
-  f.description = "Another file the report holds.";
+  SetDescription(f, Say(Tr("Another file the report holds."), "Another file the report holds."));
   return 6;
 }
 
@@ -175,33 +244,23 @@ std::string ShortForm(const std::string& name) {
 
 const char* KindName(Report::Kind kind) {
   switch (kind) {
-  case Report::Kind::Crash: return "Crash";
-  case Report::Kind::Stop: return "Stopped";
-  case Report::Kind::Stuck: return "Stuck";
-  default: return "F10 report";
+  case Report::Kind::Crash: return Tr("Crash");
+  case Report::Kind::Stop: return Tr("Stopped");
+  case Report::Kind::Stuck: return Tr("Stuck");
+  default: return Tr("F10 report");
   }
 }
 
 const char* KindExplained(Report::Kind kind) {
   switch (kind) {
-  case Report::Kind::Crash: return "The game crashed, and made this report by itself.";
-  case Report::Kind::Stop: return "The game stopped itself because something went wrong, and made this report.";
-  case Report::Kind::Stuck: return "The game stopped moving (it hung), and made this report by itself.";
-  default: return "You pressed F10 in the game.";
+  case Report::Kind::Crash: return Tr("The game crashed, and made this report by itself.");
+  case Report::Kind::Stop: return Tr("The game stopped itself because something went wrong, and made this report.");
+  case Report::Kind::Stuck: return Tr("The game stopped moving (it hung), and made this report by itself.");
+  default: return Tr("You pressed F10 in the game.");
   }
 }
 
-std::string SizeText(uint64_t bytes) {
-  char text[32];
-  if (bytes >= 1024ull * 1024) {
-    std::snprintf(text, sizeof text, "%.1f MB", static_cast<double>(bytes) / (1024.0 * 1024.0));
-  } else if (bytes >= 1024) {
-    std::snprintf(text, sizeof text, "%llu KB", static_cast<unsigned long long>((bytes + 512) / 1024));
-  } else {
-    std::snprintf(text, sizeof text, "%llu bytes", static_cast<unsigned long long>(bytes));
-  }
-  return text;
-}
+std::string SizeText(uint64_t bytes) { return SizeWith(bytes, Tr("%.1f MB"), Tr("%llu KB"), Tr("%llu bytes")); }
 
 bool Read(const fs::path& folder, Report& r) {
   r = Report();
@@ -265,10 +324,10 @@ bool Read(const fs::path& folder, Report& r) {
     }
   }
   if (!map.empty()) {
-    r.moment = map.rfind("0x", 0) == 0 ? "map " + map : map;
+    r.moment = map.rfind("0x", 0) == 0 ? Fmt(Tr("map %s"), map.c_str()) : map;
   }
   if (!frame.empty()) {
-    r.moment += (r.moment.empty() ? "game frame " : ", game frame ") + frame;
+    r.moment += (r.moment.empty() ? "" : ", ") + Fmt(Tr("game frame %s"), frame.c_str());
   }
   return true;
 }
@@ -405,7 +464,7 @@ bool Export(const Report& report, const fs::path& zipPath, const ExportOptions& 
     const fs::path path = report.folder / fs::u8path(f.name);
     std::ifstream in(path, std::ios::binary);
     if (!in) {
-      error = "Could not read " + f.name + " in the report.";
+      error = Fmt(Tr("Could not read %s in the report."), f.name.c_str());
       return false;
     }
     port_zip::File z;
@@ -425,11 +484,11 @@ bool Export(const Report& report, const fs::path& zipPath, const ExportOptions& 
   }
   std::error_code ec;
   if (fs::equivalent(zipPath.parent_path(), report.folder, ec)) {
-    error = "Please save the export somewhere outside the report's own folder.";
+    error = Tr("Please save the export somewhere outside the report's own folder.");
     return false;
   }
   if (!port_zip::Store(zipPath, files)) {
-    error = "Could not write " + Utf8(zipPath) + " (is the place writable, and is there room?).";
+    error = Fmt(Tr("Could not write %s (is the place writable, and is there room?)."), Utf8(zipPath).c_str());
     return false;
   }
   return true;
@@ -557,7 +616,8 @@ std::string Plural(uint64_t n, const char* one, const char* many) {
   return std::to_string(n) + " " + (n == 1 ? one : many);
 }
 
-void AddSessionFiles(const Session& s, const std::string& prefix, const char* whose, SessionBundle& b) {
+void AddSessionFiles(const Session& s, const std::string& prefix, const char* whoseShown, const char* whoseEnglish,
+                     SessionBundle& b) {
   std::error_code ec;
   if (!s.log.empty()) {
     BundleFile f;
@@ -565,8 +625,17 @@ void AddSessionFiles(const Session& s, const std::string& prefix, const char* wh
     f.from = s.log;
     f.size = std::min(s.logSize, kLogCap);
     f.text = true;
-    f.description = std::string("What the game program wrote about itself while ") + whose + " ran (its log)" +
-                    (s.logSize > kLogCap ? ": its last 16 MB of " + SizeText(s.logSize) + "." : ".");
+    if (s.logSize > kLogCap) {
+      SetDescription(f, Say(Tr("What the game program wrote about itself while %s ran (its log): its last 16 MB of %s."),
+                            "What the game program wrote about itself while %s ran (its log): its last 16 MB of %s.",
+                            whoseShown, SizeText(s.logSize).c_str()));
+      f.english = Fmt("What the game program wrote about itself while %s ran (its log): its last 16 MB of %s.", whoseEnglish,
+                      SizeEnglish(s.logSize).c_str());
+    } else {
+      SetDescription(f, Say(Tr("What the game program wrote about itself while %s ran (its log)."),
+                            "What the game program wrote about itself while %s ran (its log).", whoseShown));
+      f.english = Fmt("What the game program wrote about itself while %s ran (its log).", whoseEnglish);
+    }
     b.files.push_back(std::move(f));
   }
   if (!s.recording.empty()) {
@@ -575,8 +644,10 @@ void AddSessionFiles(const Session& s, const std::string& prefix, const char* wh
     f.from = s.recording;
     f.size = s.recordingSize;
     f.text = true;
-    f.description = std::string("Your button presses in ") + whose +
-                    ", so a developer can play it again exactly as it happened.";
+    SetDescription(f, Say(Tr("Your button presses in %s, so a developer can play it again exactly as it happened."),
+                          "Your button presses in %s, so a developer can play it again exactly as it happened.",
+                          whoseShown));
+    f.english = Fmt("Your button presses in %s, so a developer can play it again exactly as it happened.", whoseEnglish);
     b.files.push_back(std::move(f));
   }
   if (!s.cards.empty()) {
@@ -593,9 +664,12 @@ void AddSessionFiles(const Session& s, const std::string& prefix, const char* wh
       f.name = prefix + cardsName + "/" + rel;
       f.from = it->path();
       f.size = it->file_size(ec);
-      f.description = rel.rfind("start-card/", 0) == 0
-                          ? "Your memory card when it started (so the recording can be played from the same save)."
-                          : "Your memory card after a save in it.";
+      if (rel.rfind("start-card/", 0) == 0) {
+        SetDescription(f, Say(Tr("Your memory card when it started (so the recording can be played from the same save)."),
+                              "Your memory card when it started (so the recording can be played from the same save)."));
+      } else {
+        SetDescription(f, Say(Tr("Your memory card after a save in it."), "Your memory card after a save in it."));
+      }
       cards.push_back(std::move(f));
     }
     std::sort(cards.begin(), cards.end(), [](const BundleFile& x, const BundleFile& y) { return x.name < y.name; });
@@ -617,7 +691,8 @@ void AddSessionFiles(const Session& s, const std::string& prefix, const char* wh
       f.from = folder / fs::u8path(rf.name);
       f.size = rf.size;
       f.text = rf.text;
-      f.description = "The report " + r.when + " (" + KindName(r.kind) + "): " + rf.description;
+      f.description = Fmt(Tr("The report %s (%s): %s"), r.when.c_str(), KindName(r.kind), rf.description.c_str());
+      f.english = Fmt("The report %s (%s): %s", r.when.c_str(), KindNameEnglish(r.kind), rf.english.c_str());
       b.files.push_back(std::move(f));
     }
   }
@@ -739,19 +814,7 @@ std::vector<Session> ListSessions(const fs::path& logsFolder, const fs::path& re
 }
 
 std::string DurationText(int64_t seconds) {
-  if (seconds < 0) {
-    return "?";
-  }
-  char text[32];
-  if (seconds < 60) {
-    std::snprintf(text, sizeof text, "%lld s", static_cast<long long>(seconds));
-  } else if (seconds < 3600) {
-    std::snprintf(text, sizeof text, "%lld min", static_cast<long long>(seconds / 60));
-  } else {
-    std::snprintf(text, sizeof text, "%lld h %02lld min", static_cast<long long>(seconds / 3600),
-                  static_cast<long long>(seconds / 60 % 60));
-  }
-  return text;
+  return DurationWith(seconds, "?", Tr("%lld s"), Tr("%lld min"), Tr("%lld h %02lld min"));
 }
 
 SessionBundle BundleFor(const std::vector<Session>& sessions, size_t index, const fs::path& settingsIni,
@@ -764,9 +827,10 @@ SessionBundle BundleFor(const std::vector<Session>& sessions, size_t index, cons
   BundleFile info;
   info.name = "info.txt";
   info.text = true;
-  info.description = "When the session was, which version of the game program ran, and what each file here is.";
+  SetDescription(info, Say(Tr("When the session was, which version of the game program ran, and what each file here is."),
+                           "When the session was, which version of the game program ran, and what each file here is."));
   b.files.push_back(info);
-  AddSessionFiles(s, "", "the game", b);
+  AddSessionFiles(s, "", Tr("the game"), "the game", b);
   std::error_code ec;
   for (const fs::path& p : {settingsIni, modsIni}) {
     if (!p.empty() && fs::is_regular_file(p, ec)) {
@@ -775,22 +839,31 @@ SessionBundle BundleFor(const std::vector<Session>& sessions, size_t index, cons
       f.from = p;
       f.size = fs::file_size(p, ec);
       f.text = true;
-      f.description = Lower(f.name) == "mods.ini" ? "Your mod list as it is now: which mods are switched on (not the "
-                                                    "mods themselves)."
-                                                  : "Your settings as they are now.";
+      if (Lower(f.name) == "mods.ini") {
+        SetDescription(f, Say(Tr("Your mod list as it is now: which mods are switched on (not the mods themselves)."),
+                              "Your mod list as it is now: which mods are switched on (not the mods themselves)."));
+      } else {
+        SetDescription(f, Say(Tr("Your settings as they are now."), "Your settings as they are now."));
+      }
       b.files.push_back(std::move(f));
     }
   }
   if (s.shortRun && index + 1 < sessions.size()) {
     b.withPrevious = true;
-    b.choice = "This session is very short (" +
-               (s.recording.empty() ? std::string("the game never got to play") : "under 10 seconds of game") +
-               "), so the session before it (" + sessions[index + 1].when +
-               ") is put in too, in \"previous session\": the problem was most likely in that one.";
-    AddSessionFiles(sessions[index + 1], "previous session/", "the session before", b);
+    const Both why = s.recording.empty()
+                         ? Say(Tr("This session is very short (the game never got to play), so the session before it (%s) is put in too, in \"previous session\": the problem was most likely in that one."),
+                               "This session is very short (the game never got to play), so the session before it (%s) is put in too, in \"previous session\": the problem was most likely in that one.",
+                               sessions[index + 1].when.c_str())
+                         : Say(Tr("This session is very short (under 10 seconds of game), so the session before it (%s) is put in too, in \"previous session\": the problem was most likely in that one."),
+                               "This session is very short (under 10 seconds of game), so the session before it (%s) is put in too, in \"previous session\": the problem was most likely in that one.",
+                               sessions[index + 1].when.c_str());
+    b.choice = why.shown;
+    b.choiceEnglish = why.english;
+    AddSessionFiles(sessions[index + 1], "previous session/", Tr("the session before"), "the session before", b);
   }
   if (s.recording.empty()) {
-    b.choice += std::string(b.choice.empty() ? "" : " ") + "This session has no recording of button presses.";
+    b.choice += std::string(b.choice.empty() ? "" : " ") + Tr("This session has no recording of button presses.");
+    b.choiceEnglish += std::string(b.choiceEnglish.empty() ? "" : " ") + "This session has no recording of button presses.";
   }
   for (const BundleFile& f : b.files) {
     b.size += f.size;
@@ -925,7 +998,7 @@ bool ExportSession(const std::vector<Session>& sessions, size_t index, const Ses
                    const fs::path& zipPath, bool hideUserName, const std::string& version, const Identity& who,
                    std::string& error) {
   if (index >= sessions.size()) {
-    error = "Choose a session first.";
+    error = Tr("Choose a session first.");
     return false;
   }
   const Session& s = sessions[index];
@@ -940,7 +1013,7 @@ bool ExportSession(const std::vector<Session>& sessions, size_t index, const Ses
     std::error_code ec;
     const uint64_t size = fs::file_size(f.from, ec);
     if (ec) {
-      error = "Could not read " + Utf8(f.from) + " (was it deleted meanwhile?).";
+      error = Fmt(Tr("Could not read %s (was it deleted meanwhile?)."), Utf8(f.from).c_str());
       return false;
     }
     const uint64_t from = f.from == s.log && size > kLogCap ? size - kLogCap : 0;
@@ -950,7 +1023,7 @@ bool ExportSession(const std::vector<Session>& sessions, size_t index, const Ses
     }
     port_zip::Time(f.from, &z.time, &z.date);
     files.push_back(std::move(z));
-    descriptions.push_back(f.description);
+    descriptions.push_back(f.english);
   }
   const Shortened shortened = Shorten(files, descriptions);
   std::string listing;
@@ -971,7 +1044,7 @@ bool ExportSession(const std::vector<Session>& sessions, size_t index, const Ses
   }
   std::string info = "Play session, saved from the launcher\r\n";
   info += "launcher version " + (version.empty() ? std::string("unknown") : version) + "\r\n";
-  info += "session " + s.id + ": started " + s.when + ", ran " + DurationText(s.seconds) +
+  info += "session " + s.id + ": started " + s.when + ", ran " + DurationEnglish(s.seconds) +
           (s.recording.empty() ? std::string(", no recording")
                                : ", recorded up to game frame " + std::to_string(s.gameFrames)) +
           (s.recording.empty() ? std::string()
@@ -988,8 +1061,8 @@ bool ExportSession(const std::vector<Session>& sessions, size_t index, const Ses
     info += Plural(s.reports.size(), "report was", "reports were") +
             " made during it (included; crash dumps left out: use Export on the report's own page to add one)\r\n";
   }
-  if (!bundle.choice.empty()) {
-    info += bundle.choice + "\r\n";
+  if (!bundle.choiceEnglish.empty()) {
+    info += bundle.choiceEnglish + "\r\n";
   }
   if (!shortened.manifest.empty()) {
     info += "To keep this file small, repeated copies are left out and screenshots are JPEG: shortened.txt says which\r\n"
@@ -1017,12 +1090,12 @@ bool ExportSession(const std::vector<Session>& sessions, size_t index, const Ses
   std::error_code ec;
   for (const fs::path& f : {s.log, s.recording}) {
     if (!f.empty() && fs::equivalent(zipPath.parent_path(), f.parent_path(), ec)) {
-      error = "Please save it somewhere else than the game's own logs or recordings folder (Documents, for example).";
+      error = Tr("Please save it somewhere else than the game's own logs or recordings folder (Documents, for example).");
       return false;
     }
   }
   if (!port_zip::Store(zipPath, files)) {
-    error = "Could not write " + Utf8(zipPath) + " (is the place writable, and is there room?).";
+    error = Fmt(Tr("Could not write %s (is the place writable, and is there room?)."), Utf8(zipPath).c_str());
     return false;
   }
   return true;
@@ -1032,7 +1105,7 @@ bool Delete(const Report& report, std::string& error) {
   std::error_code ec;
   fs::remove_all(report.folder, ec);
   if (ec) {
-    error = "Could not delete the report (" + ec.message() + "). Is one of its files open in another program?";
+    error = Fmt(Tr("Could not delete the report (%s). Is one of its files open in another program?"), ec.message().c_str());
     return false;
   }
   fs::path zip = report.folder;

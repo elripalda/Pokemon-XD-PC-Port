@@ -21,11 +21,16 @@
 #include <memory>
 #include <filesystem>
 #include <fstream>
+#include <cstdarg>
 #include <functional>
 #include <string>
 #include <system_error>
 #include <thread>
 #include <vector>
+
+#include "i18n.h"
+
+#include <port_window_shot.h>
 
 extern "C" {
 void* PortXD_CaptureWindow(void* hwnd, int* width, int* height);
@@ -62,6 +67,26 @@ bool sNoticeShown = false;
 std::string Utf8(const fs::path& path) {
   const std::u8string u8 = path.u8string();
   return std::string(reinterpret_cast<const char*>(u8.data()), u8.size());
+}
+
+using engine::i18n::Tr;
+std::string TrFmt(const char* format, ...) {
+  va_list args, again;
+  va_start(args, format);
+  va_copy(again, args);
+  const int n = std::vsnprintf(nullptr, 0, format, args);
+  va_end(args);
+  std::string out(static_cast<size_t>(n > 0 ? n : 0), '\0');
+  if (n > 0) std::vsnprintf(out.data(), out.size() + 1, format, again);
+  va_end(again);
+  return out;
+}
+std::wstring Wide(const std::string& utf8) {
+  if (utf8.empty()) return L"";
+  const int n = MultiByteToWideChar(CP_UTF8, 0, utf8.data(), static_cast<int>(utf8.size()), nullptr, 0);
+  std::wstring out(static_cast<size_t>(n > 0 ? n : 0), L'\0');
+  if (n > 0) MultiByteToWideChar(CP_UTF8, 0, utf8.data(), static_cast<int>(utf8.size()), out.data(), n);
+  return out;
 }
 
 struct Press {
@@ -239,7 +264,8 @@ bool WriteBundle(Press& p) {
 
 void Save(Press p) {
   const bool zipped = WriteBundle(p);
-  sDoneText = L" - bug report saved: " + p.name + (zipped ? L".zip" : L"") + L" (in " + ReportsFolder().wstring() + L")";
+  sDoneText = L" - " + Wide(TrFmt(Tr("Bug report saved: %s (in %s)"), Utf8(fs::path(p.name + (zipped ? L".zip" : L""))).c_str(),
+                                  Utf8(ReportsFolder()).c_str()));
   sState = 2;
 }
 
@@ -365,7 +391,7 @@ void PortXD_BugReport(void* hwnd, uint32_t field, uint32_t gameFrame) {
       sTitle = title;
     }
     sWindow = window;
-    SetWindowTextW(window, (sTitle + L" - saving bug report...").c_str());
+    SetWindowTextW(window, (sTitle + L" - " + Wide(Tr("Saving bug report..."))).c_str());
     sNoticeShown = true;
     sNoticeUntil = 0;
   }
@@ -373,7 +399,10 @@ void PortXD_BugReport(void* hwnd, uint32_t field, uint32_t gameFrame) {
   std::thread(Save, std::move(p)).detach();
 }
 
+void PortXD_GamePictureFrame(void) { PortShot_LinuxFrame(); }
+
 void PortXD_BugReportPoll(void) {
+  PortShot_LinuxPoll();
   if (!sNoticeShown) {
     return;
   }

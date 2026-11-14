@@ -1,8 +1,10 @@
 #include "playthrough.h"
 
 #include "json.h"
+#include "i18n.h"
 
 #include <algorithm>
+#include <cstdarg>
 #include <cstdio>
 #include <ctime>
 #include <fstream>
@@ -21,6 +23,17 @@ namespace fs = std::filesystem;
 using mods::json::Value;
 
 namespace {
+
+using engine::i18n::Tr;
+std::string Fmt(const char* format, ...) {
+  char buf[1024];
+  va_list args;
+  va_start(args, format);
+  std::vsnprintf(buf, sizeof buf, format, args);
+  va_end(args);
+  return buf;
+}
+const char* TrEngineName(Engine engine) { return engine == Engine::Enhanced ? Tr("Enhanced") : Tr("Faithful"); }
 
 const char* const kDot = " \xC2\xB7 ";
 
@@ -110,6 +123,9 @@ std::string Label(const Setup& setup) {
     std::replace(name.begin(), name.end(), '_', ' ');
     label += (i == 0 ? kDot + std::string("Challenge: ") : std::string(", ")) + name;
   }
+  for (size_t i = 0; i < setup.options.size(); i++) {
+    label += (i == 0 ? kDot + std::string("Options: ") : std::string(", ")) + setup.options[i];
+  }
   if (!world.empty()) {
     label += kDot + std::string("Mods: ");
     for (size_t i = 0; i < world.size(); i++) {
@@ -128,6 +144,40 @@ std::string Label(const Setup& setup) {
   if (setup.Failed()) {
     label += kDot + std::string("run failed");
   }
+  return label;
+}
+
+std::string DisplayLabel(const Setup& setup) {
+  std::string label = TrEngineName(setup.engine);
+  const std::vector<const ModUse*> world = setup.WorldMods();
+  if (!setup.randomizer.empty()) {
+    label += kDot + Fmt(Tr("Randomizer %s"),
+                        (!setup.seed.empty() ? setup.seed
+                                             : setup.randomizer + (setup.randomizerVersion.empty() ? "" : " " + setup.randomizerVersion))
+                            .c_str());
+  }
+  if (!setup.challenges.empty()) {
+    std::string names;
+    for (size_t i = 0; i < setup.challenges.size(); i++) {
+      std::string name = setup.challenges[i];
+      std::replace(name.begin(), name.end(), '_', ' ');
+      names += (i == 0 ? "" : ", ") + name;
+    }
+    label += kDot + Fmt(Tr("Challenge: %s"), names.c_str());
+  }
+  if (!world.empty()) {
+    std::string names;
+    for (size_t i = 0; i < world.size(); i++) {
+      names += (i > 0 ? ", " : "") + world[i]->id + (world[i]->version.empty() ? "" : " " + world[i]->version);
+    }
+    label += kDot + Fmt(Tr("Mods: %s"), names.c_str());
+  }
+  if (setup.Vanilla()) label += kDot + std::string(Tr("Vanilla"));
+  if (!setup.engineChanged.empty()) {
+    label += kDot + Fmt(Tr("was %s"), TrEngineName(setup.engine == Engine::Enhanced ? Engine::Faithful : Engine::Enhanced));
+  }
+  if (!setup.setupChanged.empty()) label += kDot + std::string(Tr("setup changed"));
+  if (setup.Failed()) label += kDot + std::string(Tr("run failed"));
   return label;
 }
 
@@ -170,6 +220,12 @@ std::string ToJson(const Setup& s) {
     out += (i > 0 ? ", " : "") + Quote(s.challenges[i]);
   }
   out += "],\n";
+  if (!s.options.empty()) {
+    out += "  \"options\": [";
+    for (size_t i = 0; i < s.options.size(); i++) out += (i > 0 ? ", " : "") + Quote(s.options[i]);
+    out += "],\n";
+  }
+  if (!s.split.empty()) out += "  \"physical_special_split\": " + Quote(s.split) + ",\n";
   out += "  \"started\": " + Quote(s.started) + ",\n";
   out += "  \"port_version\": " + Quote(s.portVersion) + ",\n";
   if (!s.chosenBy.empty()) out += "  \"chosen_by\": " + Quote(s.chosenBy) + ",\n";
@@ -193,6 +249,34 @@ std::string ToJson(const Setup& s) {
     out += "  \"battles_won\": [";
     for (size_t i = 0; i < s.battlesWon.size(); i++) out += (i > 0 ? ", " : "") + std::to_string(s.battlesWon[i]);
     out += "],\n";
+  }
+  if (s.stats.kept) {
+    out += "  \"stats\": {\"battles_won\": " + std::to_string(s.stats.battlesWon) + ", \"battles_lost\": " +
+           std::to_string(s.stats.battlesLost) + ", \"battles_other\": " + std::to_string(s.stats.battlesOther) + "},\n";
+  }
+  if (s.speedrun.present) {
+    const Speedrun& r = s.speedrun;
+    out += "  \"speedrun\": {\"on\": " + std::string(r.on ? "true" : "false") + ", \"without_loads\": " +
+           (r.withoutLoads ? "true" : "false") + ", \"start\": " + std::to_string(r.start) + ", \"end\": " +
+           std::to_string(r.end) + ", \"category\": " + std::to_string(r.category) + ", \"rta_ms\": " + std::to_string(r.rtaMs) + ", \"load_ms\": " +
+           std::to_string(r.loadMs);
+    if (r.finished) {
+      out += ", \"final_rta_ms\": " + std::to_string(r.finalRtaMs) + ", \"final_load_ms\": " + std::to_string(r.finalLoadMs);
+    }
+    out += ", \"breaks\": [";
+    for (size_t i = 0; i < r.breaks.size(); i++) {
+      out += (i > 0 ? ", " : "") + std::string("{\"at_ms\": ") + std::to_string(r.breaks[i].atMs) + ", \"length_ms\": " +
+             std::to_string(r.breaks[i].lengthMs) + ", \"epoch\": " + std::to_string(r.breaks[i].epoch) + "}";
+    }
+    out += "], \"break_pending\": " + std::string(r.breakPending ? "true" : "false") + ", \"break_epoch\": " +
+           std::to_string(r.breakEpoch) + ", \"break_at_ms\": " + std::to_string(r.breakAtMs) + ", \"invalid\": [";
+    for (size_t i = 0; i < r.invalid.size(); i++) out += (i > 0 ? ", " : "") + Quote(r.invalid[i]);
+    out += "], \"splits\": [";
+    for (size_t i = 0; i < r.splits.size(); i++) {
+      out += (i > 0 ? ", " : "") + std::string("{\"id\": ") + Quote(r.splits[i].id) + ", \"rta_ms\": " +
+             std::to_string(r.splits[i].rtaMs) + ", \"load_ms\": " + std::to_string(r.splits[i].loadMs) + "}";
+    }
+    out += "]},\n";
   }
   out += "  \"setup_changed\": [";
   for (size_t i = 0; i < s.setupChanged.size(); i++) {
@@ -255,6 +339,9 @@ bool FromJson(std::string_view text, Setup& out, std::string& error) {
     out.seed = Text(r->second, "seed");
   }
   out.challenges = Texts(root, "challenges");
+  out.options = Texts(root, "options");
+  out.split = Text(root, "physical_special_split");
+  if (out.split != "on" && out.split != "off") out.split.clear();
   out.started = Text(root, "started");
   out.portVersion = Text(root, "port_version");
   out.chosenBy = Text(root, "chosen_by");
@@ -271,6 +358,70 @@ bool FromJson(std::string_view text, Setup& out, std::string& error) {
     out.battlesWonKept = true;
     for (const Value& v : won->second.items) {
       if (v.kind == Value::Kind::Number && v.number >= 1 && v.number <= 65535) out.battlesWon.push_back(static_cast<uint32_t>(v.number));
+    }
+  }
+  const auto st = root.fields.find("stats");
+  if (st != root.fields.end() && st->second.kind == Value::Kind::Object) {
+    out.stats.kept = true;
+    out.stats.battlesWon = Number(st->second, "battles_won");
+    out.stats.battlesLost = Number(st->second, "battles_lost");
+    out.stats.battlesOther = Number(st->second, "battles_other");
+  }
+  const auto sr = root.fields.find("speedrun");
+  if (sr != root.fields.end() && sr->second.kind == Value::Kind::Object) {
+    const auto num = [](const Value& o, const char* key, uint32_t& into, bool* has = nullptr) {
+      const auto f = o.fields.find(key);
+      if (f != o.fields.end() && f->second.kind == Value::Kind::Number && f->second.number >= 0 && f->second.number < 4294967295.0) {
+        into = static_cast<uint32_t>(f->second.number);
+        if (has != nullptr) *has = true;
+      }
+    };
+    const auto flag = [](const Value& o, const char* key) {
+      const auto f = o.fields.find(key);
+      return f != o.fields.end() && f->second.kind == Value::Kind::Bool && f->second.boolean;
+    };
+    Speedrun& r = out.speedrun;
+    r.present = true;
+    r.on = flag(sr->second, "on");
+    r.withoutLoads = flag(sr->second, "without_loads");
+    uint32_t pt = 0;
+    num(sr->second, "start", pt);
+    r.start = pt > 2 ? 2 : static_cast<int>(pt);
+    pt = 0;
+    num(sr->second, "category", pt);
+    r.category = pt > 3 ? 0 : static_cast<int>(pt);
+    pt = 0;
+    num(sr->second, "end", pt);
+    r.end = pt > 3 ? 2 : static_cast<int>(pt);
+    r.invalid = Texts(sr->second, "invalid");
+    r.breakPending = flag(sr->second, "break_pending");
+    num(sr->second, "break_epoch", r.breakEpoch);
+    num(sr->second, "break_at_ms", r.breakAtMs);
+    num(sr->second, "rta_ms", r.rtaMs);
+    num(sr->second, "load_ms", r.loadMs);
+    num(sr->second, "final_rta_ms", r.finalRtaMs, &r.finished);
+    num(sr->second, "final_load_ms", r.finalLoadMs);
+    const auto br = sr->second.fields.find("breaks");
+    if (br != sr->second.fields.end() && br->second.kind == Value::Kind::Array) {
+      for (const Value& v : br->second.items) {
+        if (v.kind != Value::Kind::Object) continue;
+        SpeedBreak b;
+        num(v, "at_ms", b.atMs);
+        num(v, "length_ms", b.lengthMs);
+        num(v, "epoch", b.epoch);
+        r.breaks.push_back(b);
+      }
+    }
+    const auto sp = sr->second.fields.find("splits");
+    if (sp != sr->second.fields.end() && sp->second.kind == Value::Kind::Array) {
+      for (const Value& v : sp->second.items) {
+        if (v.kind != Value::Kind::Object) continue;
+        SpeedSplit s;
+        s.id = Text(v, "id");
+        num(v, "rta_ms", s.rtaMs);
+        num(v, "load_ms", s.loadMs);
+        if (!s.id.empty()) r.splits.push_back(std::move(s));
+      }
     }
   }
   const auto save = root.fields.find("save");
@@ -333,13 +484,13 @@ Check Compare(const Setup& setup, const std::vector<mods::ModFolder>& found) {
     const std::string was = name + (m.version.empty() ? "" : " " + m.version);
     if (m.applies == mods::Applies::NewPlaythrough) {
       if (there == nullptr) {
-        check.worldProblems.push_back(was + " is not in the mods folder any more");
+        check.worldProblems.push_back(Fmt(Tr("%s is not in the mods folder any more"), was.c_str()));
       } else if (mods::CompareVersions(there->manifest.version, m.version) != 0) {
-        check.worldProblems.push_back(was + " is now version " +
-                                      (there->manifest.version.empty() ? std::string("(none)") : there->manifest.version));
+        check.worldProblems.push_back(Fmt(Tr("%s is now version %s"), was.c_str(),
+                                          (there->manifest.version.empty() ? std::string(Tr("(none)")) : there->manifest.version).c_str()));
       }
     } else if (there == nullptr) {
-      check.notes.push_back(was + " (" + mods::AppliesName(m.applies) + ") is not in the mods folder any more");
+      check.notes.push_back(Fmt(Tr("%s (%s) is not in the mods folder any more"), was.c_str(), mods::AppliesName(m.applies)));
     }
   }
   return check;
@@ -349,7 +500,7 @@ std::vector<std::string> BoundProblems(const Setup& setup, const std::vector<Add
   std::vector<std::string> problems;
   std::set<std::string> said;
   const auto kind = [](const std::string& table) {
-    return table == "pokemon_data" ? "Pokemon" : table == "waza_data" ? "move" : table == "item_data_prime" ? "item" : "entry";
+    return table == "pokemon_data" ? Tr("Pokemon") : table == "waza_data" ? Tr("move") : table == "item_data_prime" ? Tr("item") : Tr("entry");
   };
   for (const AddedRowRef& want : setup.addedRows) {
     if (std::find(now.begin(), now.end(), want) != now.end()) continue;
@@ -361,14 +512,14 @@ std::vector<std::string> BoundProblems(const Setup& setup, const std::vector<Add
     }
     std::string text;
     if (moved != nullptr) {
-      text = "the mod \"" + want.mod + "\" now gives the " + kind(want.table) + " \"" + want.name + "\" the number " +
-             std::to_string(moved->id) + ", the save has it as " + std::to_string(want.id) +
-             " (another mod before it, or another order of the mods)";
+      text = Fmt(Tr("the mod \"%s\" now gives the %s \"%s\" the number %d, the save has it as %d (another mod before it, or another order of the mods)"),
+                 want.mod.c_str(), kind(want.table), want.name.c_str(), static_cast<int>(moved->id), static_cast<int>(want.id));
     } else if (modThere) {
-      text = "the mod \"" + want.mod + "\" no longer adds the " + kind(want.table) + " \"" + want.name + "\" (it was changed)";
+      text = Fmt(Tr("the mod \"%s\" no longer adds the %s \"%s\" (it was changed)"), want.mod.c_str(), kind(want.table),
+                 want.name.c_str());
     } else {
-      text = "the mod \"" + want.mod + "\" is not on: this save has its " + kind(want.table) + " \"" + want.name + "\" (number " +
-             std::to_string(want.id) + ")";
+      text = Fmt(Tr("the mod \"%s\" is not on: this save has its %s \"%s\" (number %d)"), want.mod.c_str(), kind(want.table),
+                 want.name.c_str(), static_cast<int>(want.id));
     }
     if (said.insert(text).second) problems.push_back(text);
   }
@@ -439,7 +590,7 @@ std::vector<std::string> EngineSettingNames(const settings::Registry& reg) {
   std::vector<std::string> names;
   for (size_t i = 0; i < reg.Count(); i++) {
     const settings::Definition& d = reg.Get(i);
-    if (IsEngineSetting(d) && d.implemented) names.push_back(d.name);
+    if (IsEngineSetting(d) && d.implemented) names.push_back(Tr(d.name));
   }
   return names;
 }

@@ -55,11 +55,11 @@ endif ()
 if (CMAKE_SYSTEM_NAME STREQUAL "Linux" OR APPLE)
   set(XD_WINDOW_SHOT_SOURCE video/window_shot_linux.cpp) # PNG through libpng (Aurora's copy)
 else ()
-  set(XD_WINDOW_SHOT_SOURCE video/window_shot.cpp)
+  set(XD_WINDOW_SHOT_SOURCE video/window_shot.cpp video/window_shot_linux.cpp)
 endif ()
 add_library(platform_video STATIC video/presentation.cpp video/photo_mode.cpp video/freeze_frame.cpp
   video/port_menu.cpp video/focus_pause.cpp ${XD_WINDOW_SHOT_SOURCE} video/gx_texture_decode.cpp video/button_art.cpp
-  video/frame_capture.cpp video/fps_counter.cpp video/frame_rate.cpp)
+  video/frame_capture.cpp video/fps_counter.cpp video/speedrun_overlay.cpp video/frame_rate.cpp)
 if (CMAKE_SYSTEM_NAME STREQUAL "Linux" OR APPLE)
   target_link_libraries(platform_video PRIVATE PNG::PNG)
 endif ()

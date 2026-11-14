@@ -1,10 +1,14 @@
 #include "launcher_sys.h"
 
+#include "i18n.h"
+
 #include <SDL3/SDL_filesystem.h>
 #include <SDL3/SDL_stdinc.h>
 
 #include <cerrno>
 #include <chrono>
+#include <cstdarg>
+#include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <ctime>
@@ -34,6 +38,17 @@ namespace launcher::sys {
 namespace fs = std::filesystem;
 
 namespace {
+
+using engine::i18n::Tr;
+
+std::string Fmt(const char* format, ...) {
+  char buf[2048];
+  va_list args;
+  va_start(args, format);
+  std::vsnprintf(buf, sizeof(buf), format, args);
+  va_end(args);
+  return buf;
+}
 
 std::string Utf8(const fs::path& p) { return p.string(); }
 
@@ -164,20 +179,20 @@ Process* StartProgram(const StartRequest& request, std::string& error) {
   if (!outputFile.empty()) {
     outFd = open(outputFile.c_str(), O_WRONLY | O_CREAT | O_TRUNC, 0644);
     if (outFd < 0) {
-      error = std::string("its output file: ") + std::strerror(errno);
+      error = Fmt(Tr("its output file: %s"), std::strerror(errno));
       return nullptr;
     }
   }
   int fds[2];
   if (pipe(fds) != 0) {
-    error = std::string("no pipe: ") + std::strerror(errno);
+    error = Fmt(Tr("no pipe: %s"), std::strerror(errno));
     return nullptr;
   }
   fcntl(fds[0], F_SETFD, FD_CLOEXEC);
   fcntl(fds[1], F_SETFD, FD_CLOEXEC);
   const pid_t pid = fork();
   if (pid < 0) {
-    error = std::string("the system didn't start a new process: ") + std::strerror(errno);
+    error = Fmt(Tr("the system didn't start a new process: %s"), std::strerror(errno));
     close(fds[0]);
     close(fds[1]);
     if (outFd >= 0) close(outFd);
@@ -374,9 +389,9 @@ bool ToRecycleBin(const fs::path& folder, std::string& error) {
       break;
     }
   }
-  error = "It couldn't be moved to the trash (the Finder did not do it, and the Trash folder can't be written "
-          "unless this app may control the Finder: System Settings > Privacy & Security > Automation): " +
-          Utf8(folder);
+  error = Fmt(Tr("It couldn't be moved to the trash (the Finder did not do it, and the Trash folder can't be written "
+                 "unless this app may control the Finder: System Settings > Privacy & Security > Automation): %s"),
+              Utf8(folder).c_str());
   return false;
 #else
   std::error_code ec;
@@ -389,7 +404,8 @@ bool ToRecycleBin(const fs::path& folder, std::string& error) {
     trash = home / ".local/share/Trash";
   }
   if (trash.empty()) {
-    error = "The system didn't say where your home folder is, so there is no trash to move it to: " + Utf8(folder);
+    error = Fmt(Tr("The system didn't say where your home folder is, so there is no trash to move it to: %s"),
+                Utf8(folder).c_str());
     return false;
   }
   fs::create_directories(trash / "files", ec);
@@ -404,7 +420,7 @@ bool ToRecycleBin(const fs::path& folder, std::string& error) {
       if (errno == EEXIST) {
         continue;
       }
-      error = "The trash folder can't be written (" + std::string(std::strerror(errno)) + "): " + Utf8(trash);
+      error = Fmt(Tr("The trash folder can't be written (%s): %s"), std::strerror(errno), Utf8(trash).c_str());
       return false;
     }
     std::string where;
@@ -431,12 +447,12 @@ bool ToRecycleBin(const fs::path& folder, std::string& error) {
     }
     const int reason = errno;
     fs::remove(info, ec);
-    error = (reason == EXDEV ? std::string("The trash is on another drive than your saves, so it wasn't moved")
-                             : "It couldn't be moved to the trash (" + std::string(std::strerror(reason)) + ")") +
-            ": " + Utf8(folder);
+    error = reason == EXDEV ? Fmt(Tr("The trash is on another drive than your saves, so it wasn't moved: %s"),
+                                  Utf8(folder).c_str())
+                            : Fmt(Tr("It couldn't be moved to the trash (%s): %s"), std::strerror(reason), Utf8(folder).c_str());
     return false;
   }
-  error = "The trash already holds too many things of that name: " + Utf8(folder);
+  error = Fmt(Tr("The trash already holds too many things of that name: %s"), Utf8(folder).c_str());
   return false;
 #endif
 }
@@ -453,7 +469,7 @@ bool MakeShortcut(const fs::path& folder, const std::string& name, const std::st
                   const fs::path& target, const fs::path& iconFile, std::string& message) {
 #if defined(__APPLE__)
   (void)folder, (void)name, (void)description, (void)target, (void)iconFile;
-  message = "On the Mac the app is its own shortcut: drag Pokemon XD to the Dock or into Applications.";
+  message = Tr("On the Mac the app is its own shortcut: drag Pokemon XD to the Dock or into Applications.");
   return false;
 #else
   std::error_code ec;
@@ -483,7 +499,7 @@ bool MakeShortcut(const fs::path& folder, const std::string& name, const std::st
     f = nullptr;
   }
   if (f == nullptr) {
-    message = "The shortcut couldn't be written to " + Utf8(folder) + " (" + std::strerror(errno) + ").";
+    message = Fmt(Tr("The shortcut couldn't be written to %s (%s)."), Utf8(folder).c_str(), std::strerror(errno));
     return false;
   }
   chmod(link.c_str(), 0755);
@@ -505,8 +521,9 @@ bool MakeShortcut(const fs::path& folder, const std::string& name, const std::st
       }
     }
   }
-  message = "Shortcut made: " + Utf8(link) +
-            ". If your desktop shows it with a warning sign, right-click it and choose \"Allow launching\".";
+  message = Fmt(Tr("Shortcut made: %s. If your desktop shows it with a warning sign, right-click it and choose \"Allow "
+                   "launching\"."),
+                Utf8(link).c_str());
   return true;
 #endif
 }

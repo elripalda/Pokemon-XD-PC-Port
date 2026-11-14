@@ -1,0 +1,67 @@
+# Texts that reach Tr() through a variable, so tools/locale_check.py cannot see them in the code. One English text per line.
+Any time
+On restart
+New playthrough only
+Video
+Audio
+Gameplay
+Controls
+Accessibility
+System
+# games/xd/src/online_lobby.cpp SettingRows (also linked into tests without the translations): drawn with Tr(row.title), Tr(o.label), Tr(o.why)
+Rules
+Physical / special split
+Battle style
+Teams
+Pokemon each
+Pool size
+Bans each
+First pick
+Offers per pick
+Pool
+Evolution
+Legendary Pokemon
+Levels
+Level
+Items
+Time per choice
+Shadow Pokemon
+Shadow Pokemon obey
+Classic XD
+Gen 4
+Gen 4 + modern types
+Off (as in XD)
+On (as in Gen 4)
+Single battle
+Double battle
+Preset teams
+From a save (party or PC)
+Free pick, Gen 1-3
+Free pick, Gen 1-4
+Needs the Gen 4 rules.
+Snake draft
+Random offers
+The host
+Coin flip
+Gen 1-3
+Gen 1-4
+Any stage
+Fully evolved only
+Last stage of a line
+Allowed
+Not allowed
+As they are
+All the same level
+Capped at a level
+None
+Own bag items (never used up in the save)
+Only with teams from a save.
+Standard kit (Max Potion, Full Heal, Revive)
+No limit
+30 seconds
+60 seconds
+90 seconds
+120 seconds
+As in the story (they may refuse)
+Like purified ones
+This PC has no Gen 4 pack yet (make it from your Pokemon Battle Revolution disc in the launcher).

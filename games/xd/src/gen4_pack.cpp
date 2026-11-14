@@ -1,3 +1,4 @@
+#include "i18n.h"
 #include "xd_gen4.h"
 #include "xd_gen4_machines.h"
 
@@ -9,6 +10,7 @@
 
 #include <algorithm>
 #include <cctype>
+#include <cstdarg>
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
@@ -16,6 +18,21 @@
 #include <iterator>
 #include <map>
 #include <sstream>
+
+namespace {
+using engine::i18n::Tr;
+std::string TrFmt(const char* format, ...) {
+  va_list args, again;
+  va_start(args, format);
+  va_copy(again, args);
+  const int n = std::vsnprintf(nullptr, 0, format, args);
+  va_end(args);
+  std::string out(static_cast<size_t>(n > 0 ? n : 0), '\0');
+  if (n > 0) std::vsnprintf(out.data(), out.size() + 1, format, again);
+  va_end(again);
+  return out;
+}
+}
 
 extern "C" {
 struct Gen4PkxEntry {
@@ -230,14 +247,14 @@ bool PackPresent(std::string* why) {
   std::error_code ec;
   const std::filesystem::path info = PackFolder() / L"gen4.json";
   if (!std::filesystem::exists(info, ec) || !ReadText(info, text)) {
-    if (why) *why = "the Gen 4 files are not made yet (no " + PackFolder().string() + ")";
+    if (why) *why = TrFmt(Tr("the Gen 4 files are not made yet (no %s)"), PackFolder().string().c_str());
     return false;
   }
   const size_t at = text.find("\"version\"");
   const int version = at == std::string::npos ? 0 : std::atoi(text.c_str() + text.find(':', at) + 1);
   if (version != kPackVersion) {
-    if (why) *why = "the Gen 4 files were made by another version (" + std::to_string(version) + ", this game needs " +
-                    std::to_string(kPackVersion) + "): make them again";
+    if (why) *why = TrFmt(Tr("the Gen 4 files were made by another version (%d, this game needs %d): make them again"), version,
+                          static_cast<int>(kPackVersion));
     return false;
   }
   return true;
@@ -262,10 +279,10 @@ void Prepare(bool wanted, bool spots, engine::mods::LoadOptions& options, std::v
   std::string why;
   if (!PackPresent(&why)) {
     std::fprintf(stderr, "[gen4] Gen 4 rules are on, but %s: the game starts without the Gen 4 Pokemon\n", why.c_str());
-    PortMessage_Show(PORT_MESSAGE_WARNING, "Pokemon XD - Gen 4",
-                     ("The Gen 4 Pokemon can't be used: " + why +
-                      ".\n\nThey are made from your own Pokemon Battle Revolution disc on the launcher's \"Extra assets\" page.\n"
-                      "The game starts without them.")
+    PortMessage_Show(PORT_MESSAGE_WARNING, Tr("Pokemon XD - Gen 4"),
+                     TrFmt(Tr("The Gen 4 Pokemon can't be used: %s.\n\nThey are made from your own Pokemon Battle Revolution disc on "
+                              "the launcher's \"Extra assets\" page.\nThe game starts without them."),
+                           why.c_str())
                          .c_str());
     return;
   }

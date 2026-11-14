@@ -1,5 +1,7 @@
 #include "settings_ui.h"
 
+#include "i18n.h"
+
 #include <imgui.h>
 #include <misc/cpp/imgui_stdlib.h>
 
@@ -9,6 +11,7 @@
 #include <optional>
 #include <utility>
 #include <cfloat>
+#include <cstdarg>
 #include <string>
 #include <unordered_map>
 
@@ -18,6 +21,20 @@ namespace es = engine::settings;
 namespace ec = engine::controls;
 
 namespace {
+
+using engine::i18n::Tr;
+
+std::string Lbl(const char* translated, const char* english) { return std::string(translated) + "##" + english; }
+std::string Lbl(const std::string& english) { return std::string(Tr(english)) + "##" + english; }
+
+std::string Fmt(const char* format, ...) {
+  char buf[1024];
+  va_list args;
+  va_start(args, format);
+  std::vsnprintf(buf, sizeof(buf), format, args);
+  va_end(args);
+  return buf;
+}
 
 ImVec4 Col(const float c[4]) { return ImVec4(c[0], c[1], c[2], c[3]); }
 
@@ -61,12 +78,67 @@ void Wrapped(const float color[4], const std::string& text) {
   ImGui::PopStyleColor();
 }
 
+std::string KeyWord(const std::string& n) {
+  if (n == "Enter") return Tr("Enter");
+  if (n == "Esc") return Tr("Esc");
+  if (n == "Backspace") return Tr("Backspace");
+  if (n == "Tab") return Tr("Tab");
+  if (n == "Space") return Tr("Space");
+  if (n == "Caps Lock") return Tr("Caps Lock");
+  if (n == "Insert") return Tr("Insert");
+  if (n == "Home") return Tr("Home");
+  if (n == "Page Up") return Tr("Page Up");
+  if (n == "Delete") return Tr("Delete");
+  if (n == "End") return Tr("End");
+  if (n == "Page Down") return Tr("Page Down");
+  if (n == "Right Arrow") return Tr("Right Arrow");
+  if (n == "Left Arrow") return Tr("Left Arrow");
+  if (n == "Down Arrow") return Tr("Down Arrow");
+  if (n == "Up Arrow") return Tr("Up Arrow");
+  if (n == "Num Enter") return Tr("Num Enter");
+  if (n == "Left Ctrl") return Tr("Left Ctrl");
+  if (n == "Left Shift") return Tr("Left Shift");
+  if (n == "Left Alt") return Tr("Left Alt");
+  if (n == "Right Ctrl") return Tr("Right Ctrl");
+  if (n == "Right Shift") return Tr("Right Shift");
+  if (n == "Right Alt") return Tr("Right Alt");
+  return Tr(n);
+}
+
+std::string InputName(const ec::Input& in, ec::Device device) { return KeyWord(ec::InputLabel(in, device).text); }
+
+std::string GcName(ec::GcInput g) {
+  switch (g) {
+  case ec::GcInput::A: return Tr("A");
+  case ec::GcInput::B: return Tr("B");
+  case ec::GcInput::X: return Tr("X");
+  case ec::GcInput::Y: return Tr("Y");
+  case ec::GcInput::Z: return Tr("Z");
+  case ec::GcInput::L: return Tr("L");
+  case ec::GcInput::R: return Tr("R");
+  case ec::GcInput::Start: return Tr("Start");
+  case ec::GcInput::DpadUp: return Tr("D-pad up");
+  case ec::GcInput::DpadDown: return Tr("D-pad down");
+  case ec::GcInput::DpadLeft: return Tr("D-pad left");
+  case ec::GcInput::DpadRight: return Tr("D-pad right");
+  case ec::GcInput::StickUp: return Tr("Main stick up");
+  case ec::GcInput::StickDown: return Tr("Main stick down");
+  case ec::GcInput::StickLeft: return Tr("Main stick left");
+  case ec::GcInput::StickRight: return Tr("Main stick right");
+  case ec::GcInput::CStickUp: return Tr("C-stick up");
+  case ec::GcInput::CStickDown: return Tr("C-stick down");
+  case ec::GcInput::CStickLeft: return Tr("C-stick left");
+  case ec::GcInput::CStickRight: return Tr("C-stick right");
+  default: return ec::GcInputName(g);
+  }
+}
+
 std::string Join(const std::vector<ec::Input>& inputs, ec::Device device) {
   std::string out;
   for (const ec::Input& in : inputs) {
-    out += (out.empty() ? "" : ", ") + ec::InputLabel(in, device).text;
+    out += (out.empty() ? "" : ", ") + InputName(in, device);
   }
-  return out.empty() ? std::string("none") : out;
+  return out.empty() ? std::string(Tr("none")) : out;
 }
 
 }
@@ -92,9 +164,9 @@ std::vector<size_t> VisibleSettings(const es::Registry& registry, es::Category c
 
 const char* PresetName(es::Preset preset) {
   switch (preset) {
-  case es::Preset::Original: return "Original";
-  case es::Preset::Enhanced: return "Enhanced";
-  case es::Preset::Custom: return "Custom";
+  case es::Preset::Original: return Tr("Original");
+  case es::Preset::Enhanced: return Tr("Enhanced");
+  case es::Preset::Custom: return Tr("Custom");
   }
   return "";
 }
@@ -102,14 +174,14 @@ const char* PresetName(es::Preset preset) {
 const char* PresetExplanation(es::Preset preset) {
   switch (preset) {
   case es::Preset::Original:
-    return "Exactly the GameCube game: same speed, same loading times, same picture, same bugs. Nothing extra "
-           "appears in the game.";
+    return Tr("Exactly the GameCube game: same speed, same loading times, same picture, same bugs. Nothing extra "
+              "appears in the game.");
   case es::Preset::Enhanced:
-    return "The recommended improvements: a sharper, wider picture, smoother movement and shorter waits. The "
-           "game's own rules (battles, bugs, purification) stay as they were. Some of these don't work yet.";
+    return Tr("The recommended improvements: a sharper, wider picture, smoother movement and shorter waits. The "
+              "game's own rules (battles, bugs, purification) stay as they were. Some of these don't work yet.");
   case es::Preset::Custom:
-    return "Your own choice: starts from Original or Enhanced, and you change single settings on the "
-           "Settings page.";
+    return Tr("Your own choice: starts from Original or Enhanced, and you change single settings on the "
+              "Settings page.");
   }
   return "";
 }
@@ -117,13 +189,14 @@ const char* PresetExplanation(es::Preset preset) {
 std::string ValueForPeople(const es::Registry& registry, size_t index, const es::Value& value) {
   const es::Definition& d = registry.Get(index);
   switch (d.type) {
-  case es::Type::Bool: return value.i != 0 ? "On" : "Off";
+  case es::Type::Bool: return value.i != 0 ? Tr("On") : Tr("Off");
   case es::Type::Enum:
-    return value.i >= 0 && value.i < static_cast<int32_t>(d.choices.size()) ? d.choices[value.i].name : "?";
-  case es::Type::Text: return value.s.empty() ? "(empty)" : value.s;
+    return value.i >= 0 && value.i < static_cast<int32_t>(d.choices.size()) ? Tr(d.choices[value.i].name)
+                                                                            : std::string("?");
+  case es::Type::Text: return value.s.empty() ? std::string(Tr("(empty)")) : value.s;
   case es::Type::Int:
     if (const std::string name = d.IntName(value.i); !name.empty()) {
-      return name;
+      return Tr(name);
     }
     return registry.TextOf(index, value);
   default: return registry.TextOf(index, value);
@@ -140,11 +213,11 @@ bool DrawPresetChooser(es::Registry& registry, const Options& options) {
     ImGui::PushID(static_cast<int>(p));
     std::string label = PresetName(p);
     if (p == es::Preset::Original) {
-      label += "  (the GameCube game)";
+      label = Tr("Original  (the GameCube game)");
     } else if (p == es::Preset::Enhanced) {
-      label += "  (recommended improvements)";
+      label = Tr("Enhanced  (recommended improvements)");
     } else if (now == es::Preset::Custom) {
-      label += std::string("  (started from ") + PresetName(registry.BasePreset()) + ")";
+      label = Fmt(Tr("Custom  (started from %s)"), PresetName(registry.BasePreset()));
     }
     if (options.headingFont != nullptr) {
       ImGui::PushFont(static_cast<ImFont*>(options.headingFont));
@@ -172,20 +245,20 @@ bool DrawPresetChooser(es::Registry& registry, const Options& options) {
     ImGui::PopID();
   }
   if (ask) {
-    ImGui::OpenPopup("Switch preset");
+    ImGui::OpenPopup(Lbl(Tr("Switch preset"), "Switch preset").c_str());
   }
-  if (ImGui::BeginPopupModal("Switch preset", nullptr, ImGuiWindowFlags_AlwaysAutoResize)) {
-    ImGui::Text("Switch to %s?", PresetName(sPending));
-    ImGui::TextUnformatted("Your own changes to the game settings are replaced by its settings.");
-    ImGui::TextUnformatted("(Volumes, window and controls stay as you set them.)");
+  if (ImGui::BeginPopupModal(Lbl(Tr("Switch preset"), "Switch preset").c_str(), nullptr, ImGuiWindowFlags_AlwaysAutoResize)) {
+    ImGui::Text(Tr("Switch to %s?"), PresetName(sPending));
+    ImGui::TextUnformatted(Tr("Your own changes to the game settings are replaced by its settings."));
+    ImGui::TextUnformatted(Tr("(Volumes, window and controls stay as you set them.)"));
     ImGui::Spacing();
-    if (ImGui::Button("Switch")) {
+    if (ImGui::Button(Lbl(Tr("Switch"), "Switch").c_str())) {
       registry.ApplyPreset(sPending);
       changed = true;
       ImGui::CloseCurrentPopup();
     }
     ImGui::SameLine();
-    if (ImGui::Button("Keep my settings")) {
+    if (ImGui::Button(Lbl(Tr("Keep my settings"), "Keep my settings").c_str())) {
       ImGui::CloseCurrentPopup();
     }
     ImGui::EndPopup();
@@ -194,19 +267,18 @@ bool DrawPresetChooser(es::Registry& registry, const Options& options) {
   ImGui::Separator();
   const std::vector<size_t> differ = registry.NotOriginal();
   if (differ.empty()) {
-    Heading(options, "Nothing is changed");
-    Wrapped(options.colors.dim, "This is the game exactly as on the GameCube.");
+    Heading(options, Tr("Nothing is changed"));
+    Wrapped(options.colors.dim, Tr("This is the game exactly as on the GameCube."));
   } else {
-    Heading(options, "What is different from the GameCube game");
+    Heading(options, Tr("What is different from the GameCube game"));
     for (size_t i : differ) {
       const es::Definition& d = registry.Get(i);
       if (!options.gameId.empty() && !d.AppliesTo(options.gameId)) {
         continue;
       }
-      ImGui::BulletText("%s: %s (GameCube: %s)%s", d.name.c_str(),
-                        ValueForPeople(registry, i, registry.ValueOf(i)).c_str(),
-                        ValueForPeople(registry, i, registry.DefaultOf(i, es::Preset::Original)).c_str(),
-                        d.implemented ? "" : "  - doesn't work yet");
+      ImGui::BulletText(d.implemented ? Tr("%s: %s (GameCube: %s)") : Tr("%s: %s (GameCube: %s)  - doesn't work yet"),
+                        Tr(d.name).c_str(), ValueForPeople(registry, i, registry.ValueOf(i)).c_str(),
+                        ValueForPeople(registry, i, registry.DefaultOf(i, es::Preset::Original)).c_str());
     }
   }
   return changed;
@@ -220,16 +292,16 @@ bool DrawSettingRow(es::Registry& registry, size_t index, const Options& options
   ImGui::TableNextRow();
   ImGui::TableSetColumnIndex(0);
   ImGui::AlignTextToFramePadding();
-  ImGui::TextUnformatted(d.name.c_str());
+  ImGui::TextUnformatted(Tr(d.name).c_str());
   if (!d.implemented) {
     ImGui::SameLine();
-    ImGui::TextColored(Col(options.colors.faint), "(doesn't work yet)");
+    ImGui::TextColored(Col(options.colors.faint), "%s", Tr("(doesn't work yet)"));
   }
-  Wrapped(options.colors.dim, d.description);
+  Wrapped(options.colors.dim, Tr(d.description));
   const es::Value value = registry.ValueOf(index);
   const es::Value original = registry.DefaultOf(index, es::Preset::Original);
   if (!d.preference && !SameAs(registry, index, value, original)) {
-    ImGui::TextColored(Col(options.colors.accent), "Changed: on the GameCube this is %s",
+    ImGui::TextColored(Col(options.colors.accent), Tr("Changed: on the GameCube this is %s"),
                        ValueForPeople(registry, index, original).c_str());
   }
 
@@ -242,7 +314,7 @@ bool DrawSettingRow(es::Registry& registry, size_t index, const Options& options
   switch (d.type) {
   case es::Type::Bool: {
     bool on = v.i != 0;
-    if (ImGui::Checkbox(on ? "On###v" : "Off###v", &on)) {
+    if (ImGui::Checkbox((std::string(on ? Tr("On") : Tr("Off")) + "###v").c_str(), &on)) {
       v.i = on ? 1 : 0;
       changed = registry.Set(index, v);
     }
@@ -253,7 +325,7 @@ bool DrawSettingRow(es::Registry& registry, size_t index, const Options& options
       const std::string preview = ValueForPeople(registry, index, v);
       if (ImGui::BeginCombo("##v", preview.c_str())) {
         for (const auto& [number, name] : d.intNames) {
-          if (ImGui::Selectable(name.c_str(), number == v.i) && number != v.i) {
+          if (ImGui::Selectable(Lbl(name).c_str(), number == v.i) && number != v.i) {
             v.i = number;
             changed = registry.Set(index, v);
           }
@@ -273,7 +345,7 @@ bool DrawSettingRow(es::Registry& registry, size_t index, const Options& options
     const std::string preview = ValueForPeople(registry, index, v);
     if (ImGui::BeginCombo("##v", preview.c_str())) {
       for (int32_t c = 0; c < static_cast<int32_t>(d.choices.size()); c++) {
-        if (ImGui::Selectable(d.choices[c].name.c_str(), c == v.i) && c != v.i) {
+        if (ImGui::Selectable(Lbl(d.choices[c].name).c_str(), c == v.i) && c != v.i) {
           v.i = c;
           changed = registry.Set(index, v);
         }
@@ -288,7 +360,11 @@ bool DrawSettingRow(es::Registry& registry, size_t index, const Options& options
     if (sEditing != d.id && sRefused != d.id) {
       edit = v.s;
     }
-    ImGui::InputText("##v", &edit);
+    if (options.textInput != nullptr) {
+      options.textInput("##v", &edit);
+    } else {
+      ImGui::InputText("##v", &edit);
+    }
     if (ImGui::IsItemActive()) {
       sEditing = d.id;
     } else if (sEditing == d.id) {
@@ -303,7 +379,7 @@ bool DrawSettingRow(es::Registry& registry, size_t index, const Options& options
       }
     }
     if (sRefused == d.id) {
-      ImGui::TextColored(Col(options.colors.bad), "Not accepted");
+      ImGui::TextColored(Col(options.colors.bad), "%s", Tr("Not accepted"));
     }
     break;
   }
@@ -319,7 +395,7 @@ bool DrawCategory(es::Registry& registry, es::Category category, const Options& 
   bool changed = false;
   const std::vector<size_t> rows = VisibleSettings(registry, category, options);
   if (rows.empty()) {
-    Wrapped(options.colors.dim, "There are no settings here yet.");
+    Wrapped(options.colors.dim, Tr("There are no settings here yet."));
     return false;
   }
   if (ImGui::BeginTable("##settings", 2, ImGuiTableFlags_RowBg | ImGuiTableFlags_BordersInnerH |
@@ -352,47 +428,61 @@ std::string PortId(const char* device, int port, const char* key) {
 
 const char* DeviceName(ec::Device d) {
   switch (d) {
-  case ec::Device::Keyboard: return "the keyboard";
-  case ec::Device::Xbox: return "an Xbox controller";
-  case ec::Device::PlayStation: return "a PlayStation controller";
-  case ec::Device::Switch: return "a Switch controller";
-  case ec::Device::GameCube: return "a GameCube controller";
-  case ec::Device::NsoGameCube: return "a Switch Online GameCube controller";
-  default: return "a controller of no known make (buttons named as on Xbox)";
+  case ec::Device::Keyboard: return Tr("the keyboard");
+  case ec::Device::Xbox: return Tr("an Xbox controller");
+  case ec::Device::PlayStation: return Tr("a PlayStation controller");
+  case ec::Device::Switch: return Tr("a Switch controller");
+  case ec::Device::GameCube: return Tr("a GameCube controller");
+  case ec::Device::NsoGameCube: return Tr("a Switch Online GameCube controller");
+  default: return Tr("a controller of no known make (buttons named as on Xbox)");
   }
 }
 
 const char* PresetMeaning(std::optional<ec::PadPreset> preset, bool autoKind) {
   if (!preset) {
-    return autoKind ? "Auto: the standard buttons for whatever controller this is, by place (the GameCube's A is "
-                      "the bottom face button). Changed buttons are marked in the table."
-                    : "Your own buttons (changed in the table).";
+    return autoKind ? Tr("Auto: the standard buttons for whatever controller this is, by place (the GameCube's A is "
+                         "the bottom face button). Changed buttons are marked in the table.")
+                    : Tr("Your own buttons (changed in the table).");
   }
   switch (*preset) {
   case ec::PadPreset::GameCubeAdapter:
-    return "A GameCube controller through Nintendo's adapter (WUP-028) or a Mayflash adapter in Wii U mode: every "
-           "button where it is on the controller, L and R with their click. (A Mayflash in PC mode reports itself "
-           "as an ordinary controller and already maps A, B, X, Y right with Auto.)";
+    return Tr("A GameCube controller through Nintendo's adapter (WUP-028) or a Mayflash adapter in Wii U mode: every "
+              "button where it is on the controller, L and R with their click. (A Mayflash in PC mode reports itself "
+              "as an ordinary controller and already maps A, B, X, Y right with Auto.)");
   case ec::PadPreset::Xbox:
-    return "Xbox: GameCube buttons by place: A is A, B is X (left), X is B (right), Y is Y; Z is RB; L and R are "
-           "the triggers.";
+    return Tr("Xbox: GameCube buttons by place: A is A, B is X (left), X is B (right), Y is Y; Z is RB; L and R are "
+              "the triggers.");
   case ec::PadPreset::PlayStation:
-    return "PlayStation: A is Cross, B is Circle, X is Square, Y is Triangle; Z is R1; L and R are L2 and R2.";
+    return Tr("PlayStation: A is Cross, B is Circle, X is Square, Y is Triangle; Z is R1; L and R are L2 and R2.");
   case ec::PadPreset::SwitchPro:
-    return "Switch Pro: by the letters printed on it, as Nintendo's GameCube games on Switch do: A is A, B is B, X "
-           "is X, Y is Y; Z is R; L and R are ZL and ZR.";
+    return Tr("Switch Pro: by the letters printed on it, as Nintendo's GameCube games on Switch do: A is A, B is B, X "
+              "is X, Y is Y; Z is R; L and R are ZL and ZR.");
   default: return "";
   }
 }
 
-bool ChoiceButton(const char* label, bool active, const Options& o) {
+std::string PadPresetLabel(ec::PadPreset p) {
+  switch (p) {
+  case ec::PadPreset::GameCubeAdapter: return Tr("GameCube controller (adapter)");
+  case ec::PadPreset::Xbox: return Tr("Xbox");
+  case ec::PadPreset::PlayStation: return Tr("PlayStation");
+  case ec::PadPreset::SwitchPro: return Tr("Switch Pro");
+  default: return ec::PadPresetName(p);
+  }
+}
+
+std::string ActionLabel(ec::Action a) {
+  return a == ec::Action::FastForward ? std::string(Tr("Fast-forward")) : Tr(ec::ActionName(a));
+}
+
+bool ChoiceButton(const std::string& shown, const std::string& id, bool active, const Options& o) {
   if (active) {
     const ImVec4 a = Col(o.colors.accent);
     ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(a.x, a.y, a.z, 0.55f));
     ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(a.x, a.y, a.z, 0.70f));
     ImGui::PushStyleColor(ImGuiCol_ButtonActive, ImVec4(a.x, a.y, a.z, 0.85f));
   }
-  const bool clicked = ImGui::Button(label);
+  const bool clicked = ImGui::Button((shown + "##" + id).c_str());
   if (active) {
     ImGui::PopStyleColor(3);
   }
@@ -454,7 +544,7 @@ bool ControlsPanel::DrawPortTabs(es::Registry& registry, const Options& options)
     return false;
   }
   for (int p = 0; p < ec::kPorts; p++) {
-    const std::string label = "Controller " + std::to_string(p + 1);
+    const std::string label = Fmt(Tr("Controller %d"), p + 1) + "##Controller " + std::to_string(p + 1);
     const ImGuiTabItemFlags flags = shownTab_ != port_ && p == port_ ? ImGuiTabItemFlags_SetSelected : 0;
     if (ImGui::BeginTabItem(label.c_str(), nullptr, flags)) {
       if (shownTab_ != port_) {
@@ -476,14 +566,13 @@ bool ControlsPanel::DrawController(es::Registry& registry, const Options& option
   bool changed = false;
   const int port = port_;
   ec::PortMap map = ec::ReadPort(registry, port);
-  const std::string controller = "controller " + std::to_string(port + 1);
 
   std::vector<ec::ConnectedPad> pads;
   for (const Pad& p : pads_) {
     pads.push_back({p.guid, p.name});
   }
   const auto padLabel = [&](size_t i) {
-    std::string s = pads_[i].name.empty() ? "Controller" : pads_[i].name;
+    std::string s = pads_[i].name.empty() ? std::string(Tr("Controller")) : pads_[i].name;
     bool twin = false;
     for (size_t j = 0; j < pads_.size(); j++) {
       twin |= j != i && pads_[j].guid == pads_[i].guid;
@@ -503,14 +592,14 @@ bool ControlsPanel::DrawController(es::Registry& registry, const Options& option
       }
     }
   }
-  std::string preview = choice.mode == ec::ControllerChoice::Mode::Auto   ? "Automatic: the first free controller"
-                        : choice.mode == ec::ControllerChoice::Mode::None ? "None: keyboard only"
-                        : pinnedIndex >= 0                                ? padLabel(static_cast<size_t>(pinnedIndex))
-                                                                          : (choice.name.empty() ? std::string("A controller")
-                                                                                                 : choice.name) +
-                                                                                " (not plugged in)";
+  std::string preview = choice.mode == ec::ControllerChoice::Mode::Auto   ? std::string(Tr("Automatic: the first free controller"))
+                        : choice.mode == ec::ControllerChoice::Mode::None ? std::string(Tr("None: keyboard only"))
+                        : pinnedIndex >= 0 ? padLabel(static_cast<size_t>(pinnedIndex))
+                                           : Fmt(Tr("%s (not plugged in)"),
+                                                 (choice.name.empty() ? std::string(Tr("A controller")) : choice.name).c_str());
   ImGui::AlignTextToFramePadding();
-  ImGui::TextUnformatted("PC controller");
+  const char* pcLabel = Tr("PC controller");
+  ImGui::TextUnformatted(pcLabel);
   ImGui::SameLine();
   ImGui::SetNextItemWidth(ImGui::GetFontSize() * 24);
   if (ImGui::BeginCombo("##pc", preview.c_str())) {
@@ -531,10 +620,10 @@ bool ControlsPanel::DrawController(es::Registry& registry, const Options& option
       map.controller = c;
       changed |= ec::WritePort(registry, port, map);
     };
-    if (ImGui::Selectable("Automatic: the first free controller", choice.mode == ec::ControllerChoice::Mode::Auto)) {
+    if (ImGui::Selectable(Lbl(Tr("Automatic: the first free controller"), "Automatic: the first free controller").c_str(), choice.mode == ec::ControllerChoice::Mode::Auto)) {
       store(ec::ControllerChoice::Auto());
     }
-    if (ImGui::Selectable("None: keyboard only", choice.mode == ec::ControllerChoice::Mode::None)) {
+    if (ImGui::Selectable(Lbl(Tr("None: keyboard only"), "None: keyboard only").c_str(), choice.mode == ec::ControllerChoice::Mode::None)) {
       store({});
     }
     if (choice.mode == ec::ControllerChoice::Mode::Pinned && pinnedIndex < 0) {
@@ -551,33 +640,35 @@ bool ControlsPanel::DrawController(es::Registry& registry, const Options& option
   }
   if (assigned >= 0) {
     const Pad& pad = pads_[static_cast<size_t>(assigned)];
-    Wrapped(options.colors.dim, "Plays now: " + padLabel(static_cast<size_t>(assigned)) + " (it says it is " +
-                                    DeviceName(pad.device) + ").");
+    Wrapped(options.colors.dim, Fmt(Tr("Plays now: %s (it says it is %s)."), padLabel(static_cast<size_t>(assigned)).c_str(),
+                                    DeviceName(pad.device)));
   } else if (choice.mode == ec::ControllerChoice::Mode::None) {
-    Wrapped(options.colors.dim, "No PC controller: " + controller + " is played with the keyboard only" +
-                                    (port == 0 ? "." : " (if you give it keys below)."));
+    Wrapped(options.colors.dim,
+            Fmt(port == 0 ? Tr("No PC controller: controller %d is played with the keyboard only.")
+                          : Tr("No PC controller: controller %d is played with the keyboard only (if you give it keys below)."),
+                port + 1));
   } else {
-    Wrapped(options.colors.dim, pads_.empty() ? std::string("No PC controller is plugged in. Plug one in: it shows "
-                                                            "up here at once.")
-                                              : "No free PC controller for it right now.");
+    Wrapped(options.colors.dim, pads_.empty() ? std::string(Tr("No PC controller is plugged in. Plug one in: it shows "
+                                                               "up here at once."))
+                                              : std::string(Tr("No free PC controller for it right now.")));
   }
   if (pads_.size() > 0) {
-    std::string list = "Plugged in:";
+    std::string list;
     for (size_t i = 0; i < pads_.size(); i++) {
-      list += (i == 0 ? " " : ", ") + padLabel(i);
+      list += (i == 0 ? "" : ", ") + padLabel(i);
     }
-    Wrapped(options.colors.faint, list);
+    Wrapped(options.colors.faint, Fmt(Tr("Plugged in: %s"), list.c_str()));
   }
 
   ImGui::Spacing();
   ImGui::AlignTextToFramePadding();
-  ImGui::TextUnformatted("Controller preset");
+  ImGui::TextUnformatted(Tr("Controller preset"));
   const std::optional<ec::PadPreset> preset = ec::PadPresetOf(map.gamepad);
   const bool autoKind = !map.gamepad.kind && map.gamepad.layout == ec::Layout::Auto &&
                         std::all_of(map.gamepad.buttons.begin(), map.gamepad.buttons.end(),
                                     [](const auto& b) { return !b.has_value(); });
   ImGui::SameLine();
-  if (ChoiceButton("Auto", autoKind, options)) {
+  if (ChoiceButton(Tr("Auto"), "Auto", autoKind, options)) {
     ec::GamepadMap g = map.gamepad;
     g.kind.reset();
     g.layout = ec::Layout::Auto;
@@ -589,8 +680,13 @@ bool ControlsPanel::DrawController(es::Registry& registry, const Options& option
   }
   for (int p = 0; p < static_cast<int>(ec::PadPreset::Count); p++) {
     const ec::PadPreset pp = static_cast<ec::PadPreset>(p);
-    ImGui::SameLine();
-    if (ChoiceButton(ec::PadPresetName(pp), preset == pp, options)) {
+    const float buttonWidth =
+        ImGui::CalcTextSize(PadPresetLabel(pp).c_str()).x + ImGui::GetStyle().FramePadding.x * 2;
+    const float rightEdge = ImGui::GetCursorScreenPos().x + ImGui::GetContentRegionAvail().x;
+    if (ImGui::GetItemRectMax().x + ImGui::GetStyle().ItemSpacing.x + buttonWidth <= rightEdge) {
+      ImGui::SameLine();
+    }
+    if (ChoiceButton(PadPresetLabel(pp), ec::PadPresetName(pp), preset == pp, options)) {
       map.gamepad = ec::ApplyPadPreset(map.gamepad, pp);
       changed |= ec::WritePort(registry, port, map);
     }
@@ -599,29 +695,31 @@ bool ControlsPanel::DrawController(es::Registry& registry, const Options& option
 
   ImGui::Spacing();
   ImGui::AlignTextToFramePadding();
-  ImGui::TextUnformatted("Keyboard");
+  ImGui::TextUnformatted(Tr("Keyboard"));
   ImGui::SameLine();
   const bool standardKeys = map.keyboard == ec::DefaultKeyboard(port);
-  if (ChoiceButton(port == 0 ? "Keyboard default" : "No keys (default)", standardKeys, options)) {
+  if (ChoiceButton(port == 0 ? Tr("Keyboard default") : Tr("No keys (default)"),
+                   port == 0 ? "Keyboard default" : "No keys (default)", standardKeys, options)) {
     map.keyboard = ec::DefaultKeyboard(port);
     changed |= ec::WritePort(registry, port, map);
   }
   if (port != 0) {
     ImGui::SameLine();
-    if (ImGui::Button("Copy controller 1's keys")) {
+    if (ImGui::Button(Lbl(Tr("Copy controller 1's keys"), "Copy controller 1's keys").c_str())) {
       map.keyboard = ec::ReadPort(registry, 0).keyboard;
       changed |= ec::WritePort(registry, port, map);
     }
   }
-  Wrapped(options.colors.dim, port == 0 ? "Keyboard default: Dolphin's keys. X = A, Z = B, C = X, S = Y, D = Z, Q = L, "
-                                          "W = R, Enter = Start, arrow keys = main stick, I J K L = C-stick, "
-                                          "T F G H = D-pad."
-                                        : "Controllers 2-4 have no keys unless you give them some (all keyboards are "
-                                          "one keyboard: a key used twice presses both).");
+  Wrapped(options.colors.dim,
+          port == 0 ? Tr("Keyboard default: Dolphin's keys. X = A, Z = B, C = X, S = Y, D = Z, Q = L, "
+                         "W = R, Enter = Start, arrow keys = main stick, I J K L = C-stick, "
+                         "T F G H = D-pad.")
+                    : Tr("Controllers 2-4 have no keys unless you give them some (all keyboards are "
+                         "one keyboard: a key used twice presses both)."));
 
   ImGui::Spacing();
   bool rumble = map.gamepad.rumble;
-  if (ImGui::Checkbox("Rumble", &rumble)) {
+  if (ImGui::Checkbox(Lbl(Tr("Rumble"), "Rumble").c_str(), &rumble)) {
     map.gamepad.rumble = rumble;
     changed |= ec::WritePort(registry, port, map);
   }
@@ -630,14 +728,14 @@ bool ControlsPanel::DrawController(es::Registry& registry, const Options& option
   if (!canTest) {
     ImGui::BeginDisabled();
   }
-  if (ImGui::Button("Test rumble")) {
+  if (ImGui::Button(Lbl(Tr("Test rumble"), "Test rumble").c_str())) {
     rumbleRequest_ = true;
   }
   if (!canTest) {
     ImGui::EndDisabled();
   }
-  Wrapped(options.colors.dim, "When the game rumbles the controller (the game's own Rumble option in its menu still "
-                              "decides when). Off: the controller never rumbles.");
+  Wrapped(options.colors.dim, Tr("When the game rumbles the controller (the game's own Rumble option in its menu still "
+                                 "decides when). Off: the controller never rumbles."));
   return changed;
 }
 
@@ -648,8 +746,8 @@ bool ControlsPanel::DrawMapping(es::Registry& registry, const Options& options) 
   const ec::Device device = Device(registry);
 
   const ImGuiTableFlags flags = ImGuiTableFlags_RowBg | ImGuiTableFlags_BordersInnerH | ImGuiTableFlags_PadOuterX;
-  Wrapped(options.colors.dim, "Click a key or button to change it, then press the new one (Esc: cancel). \"...\": "
-                              "add a second one, none, or the standard one. Violet: changed from the standard.");
+  Wrapped(options.colors.dim, Tr("Click a key or button to change it, then press the new one (Esc: cancel). \"...\": "
+                                 "add a second one, none, or the standard one. Violet: changed from the standard."));
   const auto cell = [&](bool keyboard, size_t g, bool walk, int action, const std::string& text, bool changedHere,
                         bool listening, const char* listenText) {
     const float more = ImGui::CalcTextSize("...").x + ImGui::GetStyle().FramePadding.x * 2;
@@ -660,7 +758,7 @@ bool ControlsPanel::DrawMapping(es::Registry& registry, const Options& options) 
     } else if (changedHere) {
       ImGui::PushStyleColor(ImGuiCol_Text, Col(options.colors.accent));
     }
-    if (ImGui::Button(listening ? listenText : text.c_str(), ImVec2(width, 0))) {
+    if (ImGui::Button(((listening ? std::string(listenText) : text) + "##cell").c_str(), ImVec2(width, 0))) {
       listen_ = listening ? Listen{} : Listen{true, keyboard, false, walk, port_, g, action};
     }
     if (listening || changedHere) {
@@ -673,10 +771,10 @@ bool ControlsPanel::DrawMapping(es::Registry& registry, const Options& options) 
     bool edited = false;
     if (ImGui::BeginPopup("more")) {
       ec::PortMap map = ec::ReadPort(registry, port_);
-      if (!walk && ImGui::Selectable(keyboard ? "Add another key" : "Add another button")) {
+      if (!walk && ImGui::Selectable((keyboard ? Lbl(Tr("Add another key"), "Add another key") : Lbl(Tr("Add another button"), "Add another button")).c_str())) {
         listen_ = {true, keyboard, true, false, port_, g, action};
       }
-      if (ImGui::Selectable(keyboard ? "No key" : "No button")) {
+      if (ImGui::Selectable((keyboard ? Lbl(Tr("No key"), "No key") : Lbl(Tr("No button"), "No button")).c_str())) {
         if (action >= 0) {
           (keyboard ? map.actions.keys : map.actions.pad)[static_cast<size_t>(action)].clear();
         } else if (walk) {
@@ -688,7 +786,7 @@ bool ControlsPanel::DrawMapping(es::Registry& registry, const Options& options) 
         }
         edited = true;
       }
-      if (!walk && ImGui::Selectable(keyboard ? "Standard key" : "Standard button")) {
+      if (!walk && ImGui::Selectable((keyboard ? Lbl(Tr("Standard key"), "Standard key") : Lbl(Tr("Standard button"), "Standard button")).c_str())) {
         if (action >= 0) {
           const ec::ActionMap def = ec::DefaultActions(port_);
           const size_t a = static_cast<size_t>(action);
@@ -708,9 +806,9 @@ bool ControlsPanel::DrawMapping(es::Registry& registry, const Options& options) 
     }
   };
   if (ImGui::BeginTable("##map", 3, flags)) {
-    ImGui::TableSetupColumn("GameCube", ImGuiTableColumnFlags_WidthStretch, 0.8f);
-    ImGui::TableSetupColumn("Keyboard", ImGuiTableColumnFlags_WidthStretch, 1.0f);
-    ImGui::TableSetupColumn("PC controller", ImGuiTableColumnFlags_WidthStretch, 1.2f);
+    ImGui::TableSetupColumn(Lbl(Tr("GameCube"), "GameCube").c_str(), ImGuiTableColumnFlags_WidthStretch, 0.8f);
+    ImGui::TableSetupColumn(Lbl(Tr("Keyboard"), "Keyboard").c_str(), ImGuiTableColumnFlags_WidthStretch, 1.0f);
+    ImGui::TableSetupColumn(Lbl(Tr("PC controller"), "PC controller").c_str(), ImGuiTableColumnFlags_WidthStretch, 1.2f);
     ImGui::TableHeadersRow();
     const auto listeningTo = [&](bool keyboard, size_t input, bool walk) {
       return listen_.active && listen_.port == port && listen_.keyboard == keyboard && listen_.walk == walk &&
@@ -727,18 +825,18 @@ bool ControlsPanel::DrawMapping(es::Registry& registry, const Options& options) 
       ImGui::TableNextRow();
       ImGui::TableSetColumnIndex(0);
       ImGui::AlignTextToFramePadding();
-      ImGui::TextUnformatted(walkRow ? "Walk (hold)" : ec::GcInputName(input));
+      ImGui::TextUnformatted(walkRow ? Tr("Walk (hold)") : GcName(input).c_str());
 
       ImGui::TableSetColumnIndex(1);
       ImGui::PushID("k");
       if (walkRow) {
         cell(true, g, true, -1,
-             map.keyboard.walk.kind == ec::Input::Kind::None ? "none"
-                                                             : ec::InputLabel(map.keyboard.walk, ec::Device::Keyboard).text,
-             map.keyboard.walk.kind != ec::Input::Kind::None, listeningTo(true, g, true), "Press a key...");
+             map.keyboard.walk.kind == ec::Input::Kind::None ? std::string(Tr("none"))
+                                                             : InputName(map.keyboard.walk, ec::Device::Keyboard),
+             map.keyboard.walk.kind != ec::Input::Kind::None, listeningTo(true, g, true), Tr("Press a key..."));
       } else {
         cell(true, g, false, -1, Join(map.keyboard.keys[g], ec::Device::Keyboard),
-             map.keyboard.keys[g] != ec::DefaultKeyboard(port).keys[g], listeningTo(true, g, false), "Press a key...");
+             map.keyboard.keys[g] != ec::DefaultKeyboard(port).keys[g], listeningTo(true, g, false), Tr("Press a key..."));
       }
       ImGui::PopID();
 
@@ -746,11 +844,11 @@ bool ControlsPanel::DrawMapping(es::Registry& registry, const Options& options) 
       if (!walkRow) {
         ImGui::PushID("p");
         cell(false, g, false, -1, Join(ec::PadInputs(map.gamepad, input, device), device), map.gamepad.buttons[g].has_value(),
-             listeningTo(false, g, false), "Press a button...");
+             listeningTo(false, g, false), Tr("Press a button..."));
         ImGui::PopID();
       } else {
         ImGui::AlignTextToFramePadding();
-        ImGui::TextColored(Col(options.colors.faint), "(keyboard only: arrow keys tilt part way)");
+        ImGui::TextColored(Col(options.colors.faint), "%s", Tr("(keyboard only: arrow keys tilt part way)"));
       }
       ImGui::PopID();
     }
@@ -760,35 +858,35 @@ bool ControlsPanel::DrawMapping(es::Registry& registry, const Options& options) 
       ImGui::TableNextRow();
       ImGui::TableSetColumnIndex(0);
       ImGui::AlignTextToFramePadding();
-      ImGui::TextUnformatted(ec::ActionName(static_cast<ec::Action>(a)));
+      ImGui::TextUnformatted(ActionLabel(static_cast<ec::Action>(a)).c_str());
       ImGui::TableSetColumnIndex(1);
       ImGui::PushID("k");
       cell(true, 0, false, static_cast<int>(a), Join(map.actions.keys[a], ec::Device::Keyboard),
-           map.actions.keys[a] != defActions.keys[a], listeningToAction(true, a), "Press a key...");
+           map.actions.keys[a] != defActions.keys[a], listeningToAction(true, a), Tr("Press a key..."));
       ImGui::PopID();
       ImGui::TableSetColumnIndex(2);
       ImGui::PushID("p");
       cell(false, 0, false, static_cast<int>(a), Join(map.actions.pad[a], device), map.actions.pad[a] != defActions.pad[a],
-           listeningToAction(false, a), "Press a button...");
+           listeningToAction(false, a), Tr("Press a button..."));
       ImGui::PopID();
       ImGui::PopID();
     }
     ImGui::EndTable();
   }
   if (ec::kActionCount > 0) {
-    Wrapped(options.colors.faint, "Fast-forward is the PC version's own key, not a GameCube button: it works only while "
-                                  "the Fast-forward setting is on (Settings, Gameplay; never in Original).");
+    Wrapped(options.colors.faint, Tr("Fast-forward is the PC version's own key, not a GameCube button: it works only while "
+                                     "the Fast-forward setting is on (Settings, Gameplay; never in Original)."));
   }
 
   ImGui::Spacing();
-  if (ImGui::Button("Reset this controller to the defaults")) {
+  if (ImGui::Button(Lbl(Tr("Reset this controller to the defaults"), "Reset this controller to the defaults").c_str())) {
     ec::PortMap def = ec::DefaultPort(port);
     def.controller = map.controller;
     changed |= ec::WritePort(registry, port, def);
     listen_ = {};
   }
   ImGui::SameLine();
-  Wrapped(options.colors.dim, "Keys, buttons, preset, deadzones, click points and rumble as they come.");
+  Wrapped(options.colors.dim, Tr("Keys, buttons, preset, deadzones, click points and rumble as they come."));
   return changed;
 }
 
@@ -817,17 +915,18 @@ void ControlsPanel::DrawLiveTest(const es::Registry& registry, const Options& op
   const ec::PadReading r = LiveReading(registry);
   const int pad = AssignedPad(registry, port_);
 
-  if (ChoiceButton(testing_ ? "Stop the keyboard test (Esc)" : "Try the keyboard", testing_, options)) {
+  if (ChoiceButton(testing_ ? Tr("Stop the keyboard test (Esc)") : Tr("Try the keyboard"),
+                   testing_ ? "Stop the keyboard test (Esc)" : "Try the keyboard", testing_, options)) {
     testing_ = !testing_;
     listen_ = {};
   }
   ImGui::SameLine();
   Wrapped(options.colors.dim,
-          testing_ ? "The keyboard plays controller " + std::to_string(port_ + 1) +
-                         " here now (keys don't work on this page meanwhile; Esc ends it)."
-                   : std::string(pad >= 0 ? "Move the sticks and press buttons: this is what the game reads. "
-                                          : "No PC controller plays as this one. ") +
-                         "Click \"Try the keyboard\" to try the keys.");
+          testing_ ? Fmt(Tr("The keyboard plays controller %d here now (keys don't work on this page meanwhile; Esc ends it)."),
+                         port_ + 1)
+          : pad >= 0 ? std::string(Tr("Move the sticks and press buttons: this is what the game reads. Click \"Try the "
+                                      "keyboard\" to try the keys."))
+                     : std::string(Tr("No PC controller plays as this one. Click \"Try the keyboard\" to try the keys.")));
 
   const float u = ImGui::GetFontSize() / 16.0f;
   const float w = std::max(ImGui::GetContentRegionAvail().x, 420 * u), h = 236 * u;
@@ -877,7 +976,7 @@ void ControlsPanel::DrawLiveTest(const es::Registry& registry, const Options& op
     }
     dl->AddRect(a, b, click ? ImGui::GetColorU32(acc) : Rgb(0xC8C8D0, 0.5f), 5 * u, 0, click ? 2.5f * u : 1.0f * u);
     char text[48];
-    std::snprintf(text, sizeof(text), "%s  %d%s", name, value, click ? "  click" : "");
+    std::snprintf(text, sizeof(text), "%s  %d%s", name, value, click ? Tr("  click") : "");
     dl->AddText(ImVec2(a.x, b.y + 4 * u), click ? ImGui::GetColorU32(acc) : dim, text);
   };
 
@@ -896,9 +995,9 @@ void ControlsPanel::DrawLiveTest(const es::Registry& registry, const Options& op
   }
   const float sr = 44 * u;
   stick(ImVec2(o.x + w * 0.17f, o.y + 112 * u), sr, 0xC8C8D0, r.stickX, r.stickY,
-        pad >= 0 ? map.gamepad.leftStickDeadzone : 0.f, "Main stick");
+        pad >= 0 ? map.gamepad.leftStickDeadzone : 0.f, Tr("Main stick"));
   stick(ImVec2(o.x + w * 0.62f, o.y + 150 * u), sr * 0.72f, 0xF2C230, r.substickX, r.substickY,
-        pad >= 0 ? map.gamepad.rightStickDeadzone : 0.f, "C-stick");
+        pad >= 0 ? map.gamepad.rightStickDeadzone : 0.f, Tr("C-stick"));
   {
     const ImVec2 c(o.x + w * 0.36f, o.y + 160 * u);
     const float s = 11 * u, g = 13 * u;
@@ -915,10 +1014,10 @@ void ControlsPanel::DrawLiveTest(const es::Registry& registry, const Options& op
       dl->AddRect(ImVec2(m.x - s * 0.5f, m.y - s * 0.5f), ImVec2(m.x + s * 0.5f, m.y + s * 0.5f), Rgb(0xC8C8D0, 0.65f),
                   2 * u);
     }
-    label(ImVec2(c.x, c.y + g + 20 * u), "D-pad", dim);
+    label(ImVec2(c.x, c.y + g + 20 * u), Tr("D-pad"), dim);
   }
   button(ImVec2(o.x + w * 0.47f, o.y + 100 * u), 10 * u, 0xC8C8D0, "", on(0x1000));
-  label(ImVec2(o.x + w * 0.47f, o.y + 122 * u), "Start", dim);
+  label(ImVec2(o.x + w * 0.47f, o.y + 122 * u), Tr("Start"), dim);
   {
     const ImVec2 a(o.x + w * 0.83f, o.y + 120 * u);
     button(a, 22 * u, 0x3FBF6A, "A", on(0x0100));
@@ -930,18 +1029,19 @@ void ControlsPanel::DrawLiveTest(const es::Registry& registry, const Options& op
   std::string pressed;
   const struct {
     uint16_t bit;
-    const char* name;
-  } kNames[] = {{0x0100, "A"},  {0x0200, "B"},  {0x0400, "X"},     {0x0800, "Y"},         {0x0010, "Z"},
-                {0x0040, "L"},  {0x0020, "R"},  {0x1000, "Start"}, {0x0008, "D-pad up"}, {0x0004, "D-pad down"},
-                {0x0001, "D-pad left"}, {0x0002, "D-pad right"}};
+    ec::GcInput input;
+  } kNames[] = {{0x0100, ec::GcInput::A},       {0x0200, ec::GcInput::B},        {0x0400, ec::GcInput::X},
+                {0x0800, ec::GcInput::Y},       {0x0010, ec::GcInput::Z},        {0x0040, ec::GcInput::L},
+                {0x0020, ec::GcInput::R},       {0x1000, ec::GcInput::Start},    {0x0008, ec::GcInput::DpadUp},
+                {0x0004, ec::GcInput::DpadDown}, {0x0001, ec::GcInput::DpadLeft}, {0x0002, ec::GcInput::DpadRight}};
   for (const auto& n : kNames) {
     if (on(n.bit)) {
-      pressed += (pressed.empty() ? "" : ", ") + std::string(n.name);
+      pressed += (pressed.empty() ? "" : ", ") + GcName(n.input);
     }
   }
-  char line[160];
-  std::snprintf(line, sizeof(line), "Game reads: main stick %d, %d   C-stick %d, %d   L %d   R %d   buttons: %s", r.stickX,
-                r.stickY, r.substickX, r.substickY, r.triggerLeft, r.triggerRight, pressed.empty() ? "none" : pressed.c_str());
+  const std::string line =
+      Fmt(Tr("Game reads: main stick %d, %d   C-stick %d, %d   L %d   R %d   buttons: %s"), r.stickX, r.stickY, r.substickX,
+          r.substickY, r.triggerLeft, r.triggerRight, pressed.empty() ? Tr("none") : pressed.c_str());
   Wrapped(options.colors.dim, line);
 }
 
@@ -952,10 +1052,10 @@ bool ControlsPanel::Draw(es::Registry& registry, int port, const Options& option
   ImGui::Spacing();
   changed |= DrawMapping(registry, options);
   ImGui::Spacing();
-  Heading(options, "Sticks and triggers");
+  Heading(options, Tr("Sticks and triggers"));
   changed |= DrawSticks(registry, options);
   ImGui::Spacing();
-  Heading(options, "Try it");
+  Heading(options, Tr("Try it"));
   DrawLiveTest(registry, options);
   return changed;
 }

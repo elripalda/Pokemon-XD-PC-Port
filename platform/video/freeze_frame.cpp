@@ -14,6 +14,7 @@
 #include <SDL3/SDL_timer.h>
 
 #include <atomic>
+#include <chrono>
 #include <cstdint>
 #include <cstdio>
 #include <mutex>
@@ -128,6 +129,15 @@ bool PortFreeze_Ready(int* waitHooks) {
   return true;
 }
 
+namespace {
+std::chrono::steady_clock::time_point sFrozenSince;
+double sFrozenTotal = 0.0;
+}
+
+double PortFreeze_FrozenSeconds(void) {
+  return sFrozenTotal + (sActive ? std::chrono::duration<double>(std::chrono::steady_clock::now() - sFrozenSince).count() : 0.0);
+}
+
 bool PortFreeze_Begin(void) {
   if (sActive || sRedrawing) return false;
   {
@@ -139,6 +149,7 @@ bool PortFreeze_Begin(void) {
     return false;
   }
   sActive = true;
+  sFrozenSince = std::chrono::steady_clock::now();
   sSpeed = aurora::time::scale();
   aurora::time::set_scale(0.0f);
   PortAudio_SetFrozen(true);
@@ -160,7 +171,7 @@ void PortFreeze_Write(const void* data, size_t size) {
   if (size > 0) PortGX_ReplayWrite(data, static_cast<uint32_t>(size));
 }
 
-#if defined(__linux__) || defined(__APPLE__)
+#if defined(__linux__) || defined(__APPLE__) || defined(_WIN32)
 extern "C" bool PortShot_LinuxFrozenDraw(const uint8_t* frame, size_t size);
 void PortFreeze_DrawPicture(void) {
   if (sActive && PortShot_LinuxFrozenDraw(sFrame.data(), sFrame.size())) return;
@@ -191,6 +202,7 @@ void PortFreeze_End(void) {
   PortAudio_SetFrozen(false);
   aurora::time::set_scale(sSpeed);
   PortRunStatus_SetWaitingForPlayer(false);
+  sFrozenTotal += std::chrono::duration<double>(std::chrono::steady_clock::now() - sFrozenSince).count();
   sActive = false;
 }
 

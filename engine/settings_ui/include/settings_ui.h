@@ -24,6 +24,7 @@ struct Options {
   std::vector<std::string> hiddenPrefixes;
   Colors colors;
   void* headingFont = nullptr;
+  bool (*textInput)(const char* label, std::string* text) = nullptr;
 };
 
 std::vector<size_t> VisibleSettings(const settings::Registry& registry, settings::Category category,

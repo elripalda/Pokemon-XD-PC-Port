@@ -13,7 +13,7 @@ This repository contains **no game assets, ROMs, ISOs or executables**, and none
 You need your own legally obtained copy of the game (USA, `GXXE01`); the port reads everything from your disc
 image while it runs.
 
-## Status: public beta — version 0.4.2
+## Status: public beta — version 0.5.0
 
 **Playable from New Game into the story, with known bugs.** It is not finished: expect crashes, stalls and
 graphics differences, and keep backups of saves you care about. Downloads are on the [Releases](../../releases)
@@ -27,6 +27,25 @@ page, one per system:
 
 **Found a bug, or want to help test?** Join the [Discord](https://discord.gg/XVbDVXH4Pn) — see
 *Reporting a bug* below.
+
+New in 0.5.0:
+
+- **Online friend battles** in VS MODE: one of you makes a room, the other types its code. Both PCs run the battle and
+  only the button presses travel, encrypted, straight between the two PCs (no server of ours). Teams: a preset, your own
+  save's party or PC boxes, or any Pokémon you pick; the host chooses the rules (Classic / Gen 4 / modern types), Shadow
+  Pokémon on or off and the levels. If your router doesn't let the two PCs connect, the game says so (not yet tried
+  through two real home routers).
+- **Online trading with friends**, at the Pokémon Center PC in the story and from ONLINE on the title screen. Every
+  Pokémon is checked; both say Yes before anything changes. Trade evolutions happen in the game's own scene.
+- **Modern types** (New Game option: the Fairy type and the later type chart), **randomized starter**, **other languages**
+  (English UK, German, French, Italian, Spanish from your own PAL disc; the port's own translations are machine-made,
+  corrections welcome), **HD texture packs**, a **speedrun timer** with skip-the-logos and play statistics (caught /
+  snagged / purified counts and steps are not done yet).
+- Launcher: **save import** (Dolphin / GameCube, Game Boy Advance trade, Colosseum) and every page works with a controller.
+- The port's screens look like the game's, with a loading screen; New Game and the save picker restart straight into the
+  playthrough; the physical/special split is chosen per playthrough; the in-game SETTINGS page has a 60 fps row.
+- Fixed: the Eevee-offer crash with Leaf / Ice Stone (Gen 4), the widescreen battle menu, black launcher pictures, menus
+  too fast on high-refresh monitors; B backs out of the New Game setup.
 
 New in 0.4.2 (bug fixes):
 
@@ -136,12 +155,12 @@ decompilation, so the port and the decompilation improve together.
 
    ```
    Pokemon XD PC\
-     Pokemon XD.exe    <- start here
+     Pokemon XD Launcher.exe    <- start here
      Read me.txt
      game\             the launcher, the game and their libraries (keep them together)
    ```
 
-2. Double-click `Pokemon XD.exe`. The launcher opens: choose the disc, a preset, settings, controls and mods, then
+2. Double-click `Pokemon XD Launcher.exe`. The launcher opens: choose the disc, a preset, settings, controls and mods, then
    press Play. Its Disc page can also make a Start menu or desktop shortcut. (`game\xd.exe` can be run directly
    too.) The first time, a window asks
    for your disc image (Pokemon XD, USA: `.iso`, `.gcm`, `.rvz`, `.wia`, `.gcz` or `.ciso`); after it has been
@@ -263,7 +282,7 @@ can be changed inside the game: SETTINGS below EXIT in the field menu, or left o
    python tools/package_release.py
    ```
 
-   This writes `dist\Pokemon XD PC\` (see *Playing*): `Pokemon XD.exe` at the top, everything else in `game\`,
+   This writes `dist\Pokemon XD PC\` (see *Playing*): `Pokemon XD Launcher.exe` at the top, everything else in `game\`,
    with no test tools or debug files. Or run the build directly:
 
    ```

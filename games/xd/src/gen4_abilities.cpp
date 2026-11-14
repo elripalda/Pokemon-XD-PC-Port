@@ -1,4 +1,5 @@
 #include "xd_challenges.h"
+#include "xd_gen4.h"
 #include "xd_gen4_abilities.h"
 
 #include <cctype>
@@ -77,7 +78,7 @@ constexpr Ability kAbilities[] = {
 
 namespace xd::gen4 {
 
-bool AbilityTextsWanted() { return xd::challenges::Active("gen4_rules"); }
+bool AbilityTextsWanted() { return xd::gen4::Loaded() || xd::challenges::Active("gen4_rules"); }
 
 constexpr const char* kMessages[] = {
     "{0F} was hurt by its Solar Power!",

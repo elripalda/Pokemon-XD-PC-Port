@@ -1,18 +1,25 @@
 #include <launcher.h>
+#include <mods.h>
 
 #include "disc_verify.h"
 #include "dol_tables.h"
 #include "xd_extra_sources.h"
+#include "xd_colosseum_page.h"
+#include "xd_gba_page.h"
+#include "xd_languages.h"
 #include "xd_settings.h"
 #include "xd_user_folder.h"
 #include "xd_playthrough_files.h"
 
+#include <card_sources.h>
 #include <gc_memcard.h>
+#include <i18n.h>
 #include <gs_formats.h>
 #include <port_disc.h>
 #include <save_backups.h>
 #include <update.h>
 #include <xd_save.h>
+#include <xd_save_convert.h>
 #include <xd_save_names.h>
 #include <playthrough.h>
 #include <randomizer.h>
@@ -36,6 +43,7 @@
 
 #include <algorithm>
 #include <cctype>
+#include <cstdarg>
 #include <cerrno>
 #include <cstdio>
 #include <cstdlib>
@@ -44,18 +52,33 @@
 #include <functional>
 #include <iterator>
 #include <mutex>
+#include <chrono>
 #include <string>
 #include <vector>
 
 namespace {
 
 namespace fs = std::filesystem;
+using engine::i18n::Tr;
 using launcher::DiscVerdict;
 using launcher::SaveSummary;
 
 std::string Utf8(const fs::path& p) {
   const std::u8string u8 = p.u8string();
   return std::string(reinterpret_cast<const char*>(u8.data()), u8.size());
+}
+
+std::string Fmt(const char* format, ...) {
+  char buf[2048];
+  va_list args;
+  va_start(args, format);
+  std::vsnprintf(buf, sizeof(buf), format, args);
+  va_end(args);
+  return buf;
+}
+
+std::string TrainerText(const std::string& name, int gender) {
+  return Fmt(gender == 0 ? Tr("%s (boy)") : Tr("%s (girl)"), name.c_str());
 }
 
 bool ReadBytes(const fs::path& path, std::vector<uint8_t>& out) {
@@ -97,7 +120,7 @@ bool IdentifyDisc(const std::string& path, std::string& gameId, std::string& tit
     return false;
   }
   if (kind == PORT_DISC_NOT_A_DISC) {
-    error = "it has no GameCube or Wii disc mark";
+    error = Tr("it has no GameCube or Wii disc mark");
     return false;
   }
   gameId = info.gameId;
@@ -107,6 +130,8 @@ bool IdentifyDisc(const std::string& path, std::string& gameId, std::string& tit
 
 xd::save::GameNames sNames;
 std::string sNamesDisc;
+std::mutex sOneReader;
+void SummaryOf(const xd::save::Save& save, const std::string& discPath, launcher::SaveSummary& out);
 
 std::string Number(uint32_t n) {
   std::string s = std::to_string(n);
@@ -119,7 +144,7 @@ std::string Number(uint32_t n) {
 std::string PlayTime(double seconds) {
   const long long s = static_cast<long long>(seconds);
   char buf[48];
-  std::snprintf(buf, sizeof(buf), "%lld hours %02lld minutes", s / 3600, (s / 60) % 60);
+  std::snprintf(buf, sizeof(buf), Tr("%lld hours %02lld minutes"), s / 3600, (s / 60) % 60);
   return buf;
 }
 
@@ -188,27 +213,27 @@ launcher::GameInfo::SaveRow SaveRowOf(const fs::path& cardRoot) {
   std::vector<uint8_t> data;
   fs::path file;
   if (!FindSave(CardFolder(), data, file)) {
-    row.who = "empty";
-    row.setup = "no save yet: the game offers New Game";
+    row.who = Tr("empty");
+    row.setup = Tr("no save yet: the game offers New Game");
     return row;
   }
   xd::save::Save save;
   xd::save::ReadReport report;
   std::string error;
   if (!xd::save::ReadSave(data, save, report, error)) {
-    row.who = "a save that can't be read";
+    row.who = Tr("a save that can't be read");
     return row;
   }
   row.found = true;
-  row.who = xd::save::ToUtf8(save.trainerName) + (save.trainerGender == 0 ? " (boy)" : " (girl)");
+  row.who = TrainerText(xd::save::ToUtf8(save.trainerName), save.trainerGender);
   row.time = PlayTime(save.playTimeSeconds);
   const xd::playthrough::SaveId id = xd::playthrough::SaveIdOf(data);
   std::error_code ec;
   ep::Setup setup;
   if (!id.found || !fs::exists(xd::playthrough::SetupFileFor(id), ec)) {
-    row.setup = "Faithful \xC2\xB7 Vanilla (no setup file)";
+    row.setup = Tr("Faithful \xC2\xB7 Vanilla (no setup file)");
   } else if (!ep::ReadFile(xd::playthrough::SetupFileFor(id), setup, error)) {
-    row.setup = "its setup file can't be read";
+    row.setup = Tr("its setup file can't be read");
   } else {
     row.setup = ep::Label(setup);
     const std::string style = RandomizerStyle(setup.seed);
@@ -227,39 +252,118 @@ fs::path SaveFileOf(const fs::path& cardRoot) {
   return FindSave(CardFolder(), data, file) ? file : fs::path();
 }
 
-bool CheckImport(const fs::path& file, launcher::GameInfo::ImportCheck& out, std::string& error) {
+bool CheckImport(const fs::path& file, const std::string& discPath, launcher::GameInfo::ImportCheck& out,
+                 std::string& error) {
   namespace mc = engine::memcard;
+  namespace cs = engine::memcard::sources;
   std::vector<uint8_t> bytes;
   if (!ReadBytes(file, bytes)) {
-    error = "The file can't be read: " + Utf8(file);
+    error = Fmt(Tr("The file can't be read: %s"), Utf8(file).c_str());
     return false;
   }
-  mc::CardFile card;
+  std::vector<mc::CardFile> cardFiles;
+  cs::Container kind;
   std::string why;
-  if (!mc::ReadGci(bytes, card, why)) {
-    error = "This is not a GameCube save file (.gci): " + why + ".";
+  if (!cs::ReadAnyCardFile(bytes, cardFiles, kind, why)) {
+    error = why;
     return false;
   }
-  if (card.entry.fileName != "PokemonXD" || card.entry.gameCode.compare(0, 3, "GXX") != 0) {
-    error = "This save file is not a Pokemon XD save (it is \"" + card.entry.fileName + "\" of game " +
-            card.entry.gameCode + ").";
-    return false;
+  const mc::CardFile* card = nullptr;
+  bool otherRegion = false;
+  std::string otherCode;
+  for (const mc::CardFile& f : cardFiles) {
+    if (f.entry.fileName == "PokemonXD" && f.entry.gameCode.compare(0, 3, "GXX") == 0) {
+      if (f.entry.gameCode == "GXXE") {
+        card = &f;
+        break;
+      }
+      otherRegion = true;
+      otherCode = f.entry.gameCode;
+    }
   }
-  if (card.entry.gameCode != "GXXE") {
-    error = "This Pokemon XD save is from another region's game (" + card.entry.gameCode +
-            "); the game here is the USA version (GXXE).";
+  if (card == nullptr) {
+    if (otherRegion) {
+      if (otherCode == "GXXP") {
+        error = Tr("This is a European (PAL) Pokemon XD save (game GXXP). The USA game here can't use it. The save's layout is the "
+                   "same as the USA one (the decomp's list of what differs in the European game leaves the save code alone), but "
+                   "a European save asks for the European game's language (English, French, German, Italian or Spanish text) and "
+                   "this USA disc doesn't have those texts, so it is refused rather than risked. A language pack from a "
+                   "European disc could change that later.");
+      } else if (otherCode == "GXXJ") {
+        error = Tr("This is a Japanese Pokemon XD save (game GXXJ). The USA game here can't use it.");
+      } else {
+        error = Fmt(Tr("This Pokemon XD save is from another region's game (%s); the game here is the USA version (GXXE)."),
+                    otherCode.c_str());
+      }
+    } else if (cardFiles.size() == 1) {
+      error = Fmt(Tr("This save file is not a Pokemon XD save (it is \"%s\" of game %s)."), cardFiles[0].entry.fileName.c_str(),
+                  cardFiles[0].entry.gameCode.c_str());
+    } else {
+      error = Fmt(Tr("This memory card holds %d files, none of them a Pokemon XD save."), static_cast<int>(cardFiles.size()));
+    }
     return false;
   }
   xd::save::Save save;
   xd::save::ReadReport report;
-  if (!xd::save::ReadSave(card.data, save, report, why)) {
-    error = "The Pokemon XD save in this file can't be read: " + why;
+  if (!xd::save::ReadSave(card->data, save, report, why)) {
+    error = Fmt(Tr("The Pokemon XD save in this file can't be read: %s"), why.c_str());
     return false;
   }
   out.name = xd::save::ToUtf8(save.trainerName);
   out.cardFolder = fs::path(L"USA") / L"Card A";
-  out.cardFileName = card.entry.makerCode + "-" + card.entry.gameCode + "-" + card.entry.fileName + ".gci";
+  out.cardFileName = card->entry.makerCode + "-" + card->entry.gameCode + "-" + card->entry.fileName + ".gci";
+  mc::CardFile put = *card;
+  bool changed = kind != cs::Container::Gci;
+  if (save.order == xd::save::ByteOrder::PC) {
+    xd::save::ConvertReport conv;
+    std::string convError;
+    if (!xd::save::ConvertFile(put.data, xd::save::ByteOrder::GameCube, conv, convError)) {
+      error = "The save is in the PC's byte order and can't be turned into the GameCube's: " + convError;
+      return false;
+    }
+    changed = true;
+    out.preview.notes.push_back("This save was in the PC port's byte order; it is stored in the GameCube's, as the "
+                                "port's card holds it.");
+  }
+  if (changed) {
+    out.gci = mc::MakeGci(put);
+  }
+  {
+    const std::lock_guard<std::mutex> oneReader(sOneReader);
+    SummaryOf(save, discPath, out.preview);
+  }
+  out.preview.where = Utf8(file) + (kind == cs::Container::Gci ? "" : std::string(" (") + cs::ContainerName(kind) + ")");
   return true;
+}
+
+std::vector<launcher::GameInfo::ImportOffer> FindImportable(const std::string& discPath) {
+  namespace cs = engine::memcard::sources;
+  const cs::Environment env = cs::RealEnvironment();
+  std::vector<launcher::GameInfo::ImportOffer> offers;
+  std::error_code ec;
+  const fs::path own = fs::weakly_canonical(xd::CardRoot(), ec);
+  int looked = 0;
+  for (const cs::Found& f : cs::FindDolphinCardFiles(cs::DolphinUserFolders(env), "USA")) {
+    if (++looked > 400) {
+      break;
+    }
+    if (fs::file_size(f.path, ec) > (64u << 20)) {
+      continue;
+    }
+    launcher::GameInfo::ImportOffer o;
+    std::string error;
+    if (!CheckImport(f.path, discPath, o.check, error)) {
+      continue;
+    }
+    o.path = f.path;
+    o.where = f.where;
+    offers.push_back(std::move(o));
+  }
+  std::stable_sort(offers.begin(), offers.end(), [](const auto& a, const auto& b) {
+    std::error_code e;
+    return fs::last_write_time(a.path, e) > fs::last_write_time(b.path, e);
+  });
+  return offers;
 }
 
 void ReadSetup(const std::vector<uint8_t>& data, SaveSummary& out) {
@@ -271,35 +375,37 @@ void ReadSetup(const std::vector<uint8_t>& data, SaveSummary& out) {
   const fs::path file = xd::playthrough::SetupFileFor(id);
   std::error_code ec;
   if (!fs::exists(file, ec)) {
-    out.setup = {{"Setup", "Faithful, no mods (no setup file)"}};
-    out.setupNotes.push_back("This save was started before the port kept setups (or was copied in from Dolphin or a "
-                             "GameCube), so there is no record of how it began. It plays as Faithful with no mods.");
+    out.setup = {{Tr("Setup"), Tr("Faithful, no mods (no setup file)")}};
+    out.setupNotes.push_back(Tr("This save was started before the port kept setups (or was copied in from Dolphin or a "
+                                "GameCube), so there is no record of how it began. It plays as Faithful with no mods."));
     return;
   }
   ep::Setup setup;
   std::string error;
   if (!ep::ReadFile(file, setup, error)) {
-    out.setup = {{"Setup", "can't be read"}};
-    out.setupNotes.push_back("The setup file next to this save can't be read (" + error + "): " + Utf8(file));
+    out.setup = {{Tr("Setup"), Tr("can't be read")}};
+    out.setupNotes.push_back(Fmt(Tr("The setup file next to this save can't be read (%s): %s"), error.c_str(), Utf8(file).c_str()));
     return;
   }
-  out.setup.push_back({"Game engine", std::string(ep::EngineName(setup.engine)) +
-                                          (setup.engineChanged.empty() ? "" : std::string(" (started as ") + ep::EngineName(setup.StartedAs()) + ")")});
+  out.setup.push_back({Tr("Game engine"),
+                       setup.engineChanged.empty()
+                           ? std::string(ep::EngineName(setup.engine))
+                           : Fmt(Tr("%s (started as %s)"), ep::EngineName(setup.engine), ep::EngineName(setup.StartedAs()))});
   std::string world, looks;
   for (const ep::ModUse& m : setup.mods) {
     std::string& list = m.applies == engine::mods::Applies::NewPlaythrough ? world : looks;
     list += (list.empty() ? "" : ", ") + (m.name.empty() ? m.id : m.name) + (m.version.empty() ? "" : " " + m.version);
   }
-  out.setup.push_back({"Mods", world.empty() ? std::string("none") : world});
+  out.setup.push_back({Tr("Mods"), world.empty() ? std::string(Tr("none")) : world});
   if (!looks.empty()) {
-    out.setup.push_back({"Looks and sound", looks});
+    out.setup.push_back({Tr("Looks and sound"), looks});
   }
   if (!setup.randomizer.empty()) {
     const std::string& code = setup.seed;
     const std::string known = RandomizerStyle(code);
-    const std::string style = known.empty() ? std::string("unknown style") : known;
-    out.setup.push_back({"Randomizer", style});
-    out.setup.push_back({"Randomizer code", code.empty() ? std::string("(none kept)") : code});
+    const std::string style = known.empty() ? std::string(Tr("unknown style")) : known;
+    out.setup.push_back({Tr("Randomizer"), style});
+    out.setup.push_back({Tr("Randomizer code"), code.empty() ? std::string(Tr("(none kept)")) : code});
     if (!code.empty()) {
       out.shareCode = code;
       const fs::path spoiler = xd::CardRoot() / L"playthroughs" / L"randomizer" / fs::path(code) / L"spoiler.txt";
@@ -308,30 +414,85 @@ void ReadSetup(const std::vector<uint8_t>& data, SaveSummary& out) {
       }
     }
   } else {
-    out.setup.push_back({"Randomizer", "off"});
+    out.setup.push_back({Tr("Randomizer"), Tr("off")});
   }
   if (!setup.started.empty()) {
-    out.setup.push_back({"Started", setup.started + (setup.portVersion.empty() ? "" : " (port " + setup.portVersion + ")")});
+    out.setup.push_back({Tr("Started"), setup.portVersion.empty()
+                                            ? setup.started
+                                            : Fmt(Tr("%s (port %s)"), setup.started.c_str(), setup.portVersion.c_str())});
   }
   if (setup.chosenBy == "run") {
-    out.setupNotes.push_back("Nobody chose this setup on the New Game screen: the game was started without it (the "
-                             "Original preset, or a test), so it quietly kept the setup it was running with.");
+    out.setupNotes.push_back(Tr("Nobody chose this setup on the New Game screen: the game was started without it (the "
+                                "Original preset, or a test), so it quietly kept the setup it was running with."));
   }
   for (const std::string& c : setup.engineChanged) {
-    out.setupNotes.push_back("Game engine: " + c + ".");
+    out.setupNotes.push_back(Fmt(Tr("Game engine: %s."), c.c_str()));
   }
   if (!setup.engineChanged.empty()) {
-    out.setupNotes.push_back("Because the engine was switched, this playthrough is not Faithful from start to end.");
+    out.setupNotes.push_back(Tr("Because the engine was switched, this playthrough is not Faithful from start to end."));
   }
   for (const std::string& c : setup.setupChanged) {
-    out.setupNotes.push_back("Carried on without its full setup: " + c);
+    out.setupNotes.push_back(Fmt(Tr("Carried on without its full setup: %s"), c.c_str()));
+  }
+}
+
+void SummaryOf(const xd::save::Save& save, const std::string& discPath, SaveSummary& out) {
+  namespace xs = xd::save;
+  if (!discPath.empty() && discPath != sNamesDisc) {
+    std::string nameError;
+    sNamesDisc = sNames.Load(discPath, nameError) ? discPath : std::string();
+  }
+  const bool named = !sNamesDisc.empty() && sNames.Loaded();
+  const auto species = [&](uint16_t id) {
+    const std::string n = named ? sNames.Species(id) : std::string();
+    return n.empty() ? Fmt(Tr("Pokemon #%d"), static_cast<int>(id)) : n;
+  };
+  const auto item = [&](uint16_t id) {
+    if (id == 0) {
+      return std::string("-");
+    }
+    const std::string n = named ? sNames.Item(id) : std::string();
+    return n.empty() ? Fmt(Tr("item #%d"), static_cast<int>(id)) : n;
+  };
+
+  out.state = SaveSummary::State::Found;
+  char id[16];
+  std::snprintf(id, sizeof(id), "%05u", save.TrainerId());
+  out.facts = {
+      {Tr("Trainer"), TrainerText(xs::ToUtf8(save.trainerName), save.trainerGender)},
+      {Tr("Trainer ID"), id},
+      {Tr("Play time"), PlayTime(save.playTimeSeconds)},
+      {Tr("Money"), "P" + Number(save.money)},
+      {Tr("Poke Coupons"), Number(save.coupons)},
+      {Tr("Saved"), Fmt(save.gameSaveCount == 1 ? Tr("%s time") : Tr("%s times"), Number(save.gameSaveCount).c_str())},
+  };
+  out.partyColumns = {Tr("Pokemon"), Tr("Nickname"), Tr("Level"), Tr("Held item"), ""};
+  for (const xs::Pokemon& p : save.party) {
+    if (p.IsEmpty()) {
+      continue;
+    }
+    std::string notes;
+    if (p.IsEgg()) {
+      notes = Tr("Egg");
+    }
+    if (p.IsShiny()) {
+      notes += std::string(notes.empty() ? "" : ", ") + Tr("Shiny");
+    }
+    if (const xs::ShadowEntry* s = save.ShadowOf(p)) {
+      notes += std::string(notes.empty() ? "" : ", ") +
+               (s->Purified() ? std::string(Tr("was a Shadow Pokemon"))
+                              : Fmt(Tr("Shadow Pokemon (heart gauge %d)"), static_cast<int>(s->heartGauge)));
+    }
+    out.party.push_back({species(p.species), xs::ToUtf8(p.nickname), std::to_string(p.level), item(p.heldItem), notes});
+  }
+  if (!named) {
+    out.notes.push_back(Tr("Pokemon and item names come from your disc: they appear once the disc is chosen and checked."));
   }
 }
 
 SaveSummary ReadSave(const std::string& discPath) {
   namespace mc = engine::memcard;
   namespace xs = xd::save;
-  static std::mutex sOneReader;
   const std::lock_guard<std::mutex> oneReader(sOneReader);
   SaveSummary out;
   const fs::path folder = CardFolder();
@@ -357,55 +518,7 @@ SaveSummary ReadSave(const std::string& discPath) {
     return out;
   }
 
-  if (!discPath.empty() && discPath != sNamesDisc) {
-    std::string nameError;
-    sNamesDisc = sNames.Load(discPath, nameError) ? discPath : std::string();
-  }
-  const bool named = !sNamesDisc.empty() && sNames.Loaded();
-  const auto species = [&](uint16_t id) {
-    const std::string n = named ? sNames.Species(id) : std::string();
-    return n.empty() ? "Pokemon #" + std::to_string(id) : n;
-  };
-  const auto item = [&](uint16_t id) {
-    if (id == 0) {
-      return std::string("-");
-    }
-    const std::string n = named ? sNames.Item(id) : std::string();
-    return n.empty() ? "item #" + std::to_string(id) : n;
-  };
-
-  out.state = SaveSummary::State::Found;
-  char id[16];
-  std::snprintf(id, sizeof(id), "%05u", save.TrainerId());
-  out.facts = {
-      {"Trainer", xs::ToUtf8(save.trainerName) + (save.trainerGender == 0 ? " (boy)" : " (girl)")},
-      {"Trainer ID", id},
-      {"Play time", PlayTime(save.playTimeSeconds)},
-      {"Money", "P" + Number(save.money)},
-      {"Poke Coupons", Number(save.coupons)},
-      {"Saved", Number(save.gameSaveCount) + (save.gameSaveCount == 1 ? " time" : " times")},
-  };
-  out.partyColumns = {"Pokemon", "Nickname", "Level", "Held item", ""};
-  for (const xs::Pokemon& p : save.party) {
-    if (p.IsEmpty()) {
-      continue;
-    }
-    std::string notes;
-    if (p.IsEgg()) {
-      notes = "Egg";
-    }
-    if (p.IsShiny()) {
-      notes += std::string(notes.empty() ? "" : ", ") + "Shiny";
-    }
-    if (const xs::ShadowEntry* s = save.ShadowOf(p)) {
-      notes += std::string(notes.empty() ? "" : ", ") +
-               (s->Purified() ? std::string("was a Shadow Pokemon") : "Shadow Pokemon (heart gauge " + std::to_string(s->heartGauge) + ")");
-    }
-    out.party.push_back({species(p.species), xs::ToUtf8(p.nickname), std::to_string(p.level), item(p.heldItem), notes});
-  }
-  if (!named) {
-    out.notes.push_back("Pokemon and item names come from your disc: they appear once the disc is chosen and checked.");
-  }
+  SummaryOf(save, discPath, out);
   ReadSetup(data, out);
   return out;
 }
@@ -428,18 +541,20 @@ struct DiscTexture {
   enum class Part { Whole, TopSquare, Trimmed, TopSquareTrimmed } part;
   bool animation;
 };
-constexpr DiscTexture kDiscTextures[] = {
-    {"shadow_lugia_face", "Shadow Lugia (face)", "poke_face.fsys", "face249dark", DiscTexture::Part::TopSquare, false},
-    {"shadow_lugia_icon", "Shadow Lugia (party icon)", "poke_dance.fsys", "darklugia",
-     DiscTexture::Part::TopSquareTrimmed, true},
-    {"lugia_body", "Lugia", "poke_body.fsys", "body249", DiscTexture::Part::Trimmed, false},
-    {"eevee_face", "Eevee (face)", "poke_face.fsys", "face133", DiscTexture::Part::TopSquare, false},
-    {"eevee_icon", "Eevee (party icon)", "poke_dance.fsys", "eievui", DiscTexture::Part::TopSquareTrimmed, true},
-    {"espeon_face", "Espeon (face)", "poke_face.fsys", "face196", DiscTexture::Part::TopSquare, false},
-    {"umbreon_face", "Umbreon (face)", "poke_face.fsys", "face197", DiscTexture::Part::TopSquare, false},
-    {"hero_face", "The hero (face)", "chara_small.fsys", "charaface_small_l_rinto_0101", DiscTexture::Part::Trimmed,
-     false},
-};
+std::vector<DiscTexture> DiscTextures() {
+  return {
+      {"shadow_lugia_face", Tr("Shadow Lugia (face)"), "poke_face.fsys", "face249dark", DiscTexture::Part::TopSquare, false},
+      {"shadow_lugia_icon", Tr("Shadow Lugia (party icon)"), "poke_dance.fsys", "darklugia",
+       DiscTexture::Part::TopSquareTrimmed, true},
+      {"lugia_body", Tr("Lugia"), "poke_body.fsys", "body249", DiscTexture::Part::Trimmed, false},
+      {"eevee_face", Tr("Eevee (face)"), "poke_face.fsys", "face133", DiscTexture::Part::TopSquare, false},
+      {"eevee_icon", Tr("Eevee (party icon)"), "poke_dance.fsys", "eievui", DiscTexture::Part::TopSquareTrimmed, true},
+      {"espeon_face", Tr("Espeon (face)"), "poke_face.fsys", "face196", DiscTexture::Part::TopSquare, false},
+      {"umbreon_face", Tr("Umbreon (face)"), "poke_face.fsys", "face197", DiscTexture::Part::TopSquare, false},
+      {"hero_face", Tr("The hero (face)"), "chara_small.fsys", "charaface_small_l_rinto_0101", DiscTexture::Part::Trimmed,
+       false},
+  };
+}
 
 launcher::icon::Image ReadDiscTexture(const DiscTexture& t) {
   namespace li = launcher::icon;
@@ -487,13 +602,14 @@ bool ReadDiscPictures(const std::string& discPath, std::vector<launcher::GameInf
   if (dol != nullptr && PortXD_LoadDolTables(dol, dolSize, err, sizeof(err))) {
     if (const uint8_t* t = PortXD_GetDolTable("_memcardIconImage")) {
       constexpr size_t kFrame = 32 * 32, kFrames = 8, kShown = 1;
-      pictures.push_back({"save_icon", "Save-file icon (Eevee)",
+      pictures.push_back({"save_icon", Tr("Save-file icon (Eevee)"),
                           launcher::icon::DecodeCI8(t + kFrame * kShown, t + kFrame * kFrames, 32, 32)});
     }
   } else {
     error = std::string("main.dol: ") + err;
   }
-  for (const DiscTexture& t : kDiscTextures) {
+  const std::vector<DiscTexture> textures = DiscTextures();
+  for (const DiscTexture& t : textures) {
     launcher::icon::Image img = ReadDiscTexture(t);
     if (!img.Empty()) {
       pictures.push_back({t.id, t.name, std::move(img)});
@@ -508,7 +624,7 @@ bool ReadDiscPictures(const std::string& discPath, std::vector<launcher::GameInf
     PortDisc_Free(bnr);
   }
   if (!banner.Empty()) {
-    pictures.insert(pictures.begin(), {"banner", "Disc banner", banner, launcher::icon::Crop(banner, 46, 0, 39, 32)});
+    pictures.insert(pictures.begin(), {"banner", Tr("Disc banner"), banner, launcher::icon::Crop(banner, 46, 0, 39, 32)});
   }
   // The end credits' screen (staffroll.fsys, its only entry: 640x480 C8) has the game's logo large and sharp: the
   // logo is x 160-487, y 82-210 (the copyright lines below it are left out). "XD logo" (the default icon): its
@@ -520,18 +636,18 @@ bool ReadDiscPictures(const std::string& discPath, std::vector<launcher::GameInf
     namespace li = launcher::icon;
     const li::Image logo = li::Crop(credits, 160, 82, 328, 129);
     const li::Image xd = li::Crop(credits, 352, 82, 126, 124);
-    pictures.insert(pictures.begin(), {"full_logo", "Full logo", li::AlphaFromBrightness(logo), xd});
-    pictures.insert(pictures.begin() + 1, {"xd_logo", "XD logo", xd});
+    pictures.insert(pictures.begin(), {"full_logo", Tr("Full logo"), li::AlphaFromBrightness(logo), xd});
+    pictures.insert(pictures.begin() + 1, {"xd_logo", Tr("XD logo"), xd});
   }
   const launcher::icon::Image map =
       ReadDiscTexture({"orre_map", "", "world_map.fsys", "menu_039", DiscTexture::Part::Whole, false});
   if (!map.Empty()) {
-    pictures.push_back({"bg_orre_map", "The map of Orre", map, {}, true});
+    pictures.push_back({"bg_orre_map", Tr("The map of Orre"), map, {}, true});
   }
   const launcher::icon::Image balls =
       ReadDiscTexture({"menu", "", "title.fsys", "menu_042", DiscTexture::Part::Whole, false});
   if (!balls.Empty()) {
-    pictures.push_back({"bg_menu", "The menus' Poke Ball pattern", balls, {}, true});
+    pictures.push_back({"bg_menu", Tr("The menus' Poke Ball pattern"), balls, {}, true});
   }
   return !pictures.empty();
 }
@@ -563,10 +679,10 @@ void SetUpUpdates(launcher::GameInfo::Updates& u, const fs::path& own) {
   }
   u.stagingFolder = xd::UserFolder() / L"updates";
 #if defined(_WIN32)
-  u.starterName = "Pokemon XD.exe";
+  u.starterName = "Pokemon XD Launcher.exe|Pokemon XD.exe";
   u.requiredFiles = {"xd_launcher.exe", "xd.exe"};
 #else
-  u.starterName = "Pokemon XD.sh";
+  u.starterName = "Pokemon XD Launcher.sh|Pokemon XD.sh";
   u.requiredFiles = {"xd_launcher", "xd"};
 #endif
 }
@@ -656,7 +772,7 @@ bool PrepareShaders(const std::string& discPath, const std::function<void(uint32
   }
   const fs::path cache = ShaderCacheFolder();
   if (cache.empty()) {
-    error = "no folder for the shader caches";
+    error = Tr("no folder for the shader caches");
     return false;
   }
   fs::create_directories(cache, ec);
@@ -681,7 +797,7 @@ bool PrepareShaders(const std::string& discPath, const std::function<void(uint32
   sys::Process* game =
       StartHiddenGame({"XD_PREPARE_SHADERS=" + Utf8(stamp), "XD_PREPARE_SHADERS_KEY=" + key}, discPath, false);
   if (game == nullptr) {
-    error = "could not start the game program";
+    error = Tr("could not start the game program");
     return false;
   }
   for (int waited = 0; !sys::Ended(game, 100); waited += 100) {
@@ -692,7 +808,7 @@ bool PrepareShaders(const std::string& discPath, const std::function<void(uint32
     if (stop() || waited > 20 * 60 * 1000) {
       sys::Stop(game);
       sys::Close(game);
-      error = stop() ? "stopped (the launcher closed)" : "took too long";
+      error = stop() ? Tr("stopped (the launcher closed)") : Tr("took too long");
       return false;
     }
   }
@@ -706,9 +822,84 @@ bool PrepareShaders(const std::string& discPath, const std::function<void(uint32
   std::string have;
   if (std::ifstream in(stamp); in) std::getline(in, have);
   if (code != 0 || have != key) {
-    error = "the game's shader preparation ended with code " + std::to_string(code) + " (see its log in " +
-            Utf8(xd::UserFolder() / L"logs") + ")";
+    error = Fmt(Tr("the game's shader preparation ended with code %d (see its log in %s)"), code,
+                Utf8(xd::UserFolder() / L"logs").c_str());
     return false;
+  }
+  return true;
+}
+
+bool RenderTrainerPortraits(const std::string& discPath, const std::string& id, const std::function<bool()>& stop, std::string& error) {
+  const fs::path folder = xd::SettingsFolder() / L"trainer_card" / L"icons";
+  const fs::path done = folder / (L"portraits_" + fs::path(id).wstring() + L".done");
+  std::error_code ec;
+  if (fs::exists(done, ec)) return true;
+  fs::create_directories(folder, ec);
+  std::vector<int> rows;
+  for (int r = 1; r <= 66; r++) {
+    if (r != 0x2A && r != 0x40 && r != 0x42) rows.push_back(r);
+  }
+  unsigned long worst = 0;
+  for (size_t i = 0; i < rows.size(); i += 20) {
+    std::string items;
+    for (size_t k = i; k < rows.size() && k < i + 20; k++) {
+      items += (items.empty() ? "" : ",") + std::string("trainer:") + std::to_string(rows[k]) + ":xd_" + std::to_string(rows[k]) + ":anim2";
+    }
+    sys::Process* game = StartHiddenGame({"XD_RENDER_ICON=" + items, "XD_RENDER_ICON_DIR=" + folder.string(), "XD_RENDER_ICON_SIZE=512"}, discPath, true);
+    if (game == nullptr) { error = Tr("could not start the game program"); return false; }
+    for (int waited = 0; !sys::Ended(game, 250); waited += 250) {
+      if (stop() || waited > 5 * 60 * 1000) { sys::Stop(game); sys::Close(game); error = Tr("the trainer pictures took too long or were stopped"); return false; }
+    }
+    const unsigned long code = static_cast<unsigned long>(static_cast<unsigned int>(sys::ExitCode(game)));
+    sys::Close(game);
+    if (code > worst) worst = code;
+  }
+  if (FILE* f = sys::OpenFile(done, "w")) {
+    std::fprintf(f, "trainer portraits: worst exit code %lu\n", worst);
+    std::fclose(f);
+  }
+  return true;
+}
+
+bool RenderOfferPictures(const std::string& discPath, const std::string& id, const std::function<void()>& starting,
+                         const std::function<bool()>& stop, std::string& error) {
+  std::error_code ec;
+  const fs::path pack = xd::SettingsFolder() / L"extra_assets" / L"pbr_gen4" / L"gen4.json";
+  if (!fs::exists(pack, ec) || !fs::exists(sGameProgram, ec)) return true;
+  const fs::path folder = xd::UserFolder() / L"icons" / L"offer";
+  const fs::path done = folder / (L"render_offer_" + fs::path(id).wstring() + L".done");
+  const std::string stamp = std::to_string(static_cast<long long>(fs::last_write_time(pack, ec).time_since_epoch().count()));
+  std::string have;
+  if (std::ifstream in(done); in) std::getline(in, have);
+  if (have == stamp) return true;
+  fs::create_directories(folder, ec);
+  starting();
+  sys::Process* game = StartHiddenGame({"XD_RENDER_ICON=offer", "XD_CHALLENGES=gen4_rules"}, discPath, true);
+  if (game == nullptr) {
+    error = Tr("could not start the game program for the Eevee offer pictures");
+    return false;
+  }
+  for (int waited = 0; !sys::Ended(game, 250); waited += 250) {
+    if (stop() || waited > 3 * 60 * 1000) {
+      sys::Stop(game);
+      sys::Close(game);
+      error = stop() ? Tr("stopped (the launcher closed, or Play was pressed)") : Tr("the game took too long for the Eevee offer pictures");
+      return false;
+    }
+  }
+  const int code = sys::ExitCode(game);
+  sys::Close(game);
+  if (code != 0) {
+    {
+      char eb[160];
+      std::snprintf(eb, sizeof eb, Tr("the game's render mode for the Eevee offer ended with code %d"), code);
+      error = eb;
+    }
+    return false;
+  }
+  if (FILE* f = sys::OpenFile(done, "w")) {
+    std::fprintf(f, "%s\n", stamp.c_str());
+    std::fclose(f);
   }
   return true;
 }
@@ -722,25 +913,41 @@ bool RenderPictures(const std::string& discPath, const std::string& discId, cons
   }
   const fs::path done = folder / (L"render_" + fs::path(id).wstring() + L".done");
   std::error_code ec;
+  {
+    const char* kRendererVersion = "2";
+    const fs::path versionFile = folder / L"renderer_version.txt";
+    std::string have;
+    if (std::ifstream in(versionFile); in) std::getline(in, have);
+    if (have != kRendererVersion) {
+      fs::create_directories(folder, ec);
+      fs::remove(done, ec);
+      fs::remove(xd::SettingsFolder() / L"trainer_card" / L"icons" / (L"portraits_" + fs::path(id).wstring() + L".done"), ec);
+      fs::remove(xd::UserFolder() / L"icons" / L"offer" / (L"render_offer_" + fs::path(id).wstring() + L".done"), ec);
+      if (FILE* f = sys::OpenFile(versionFile, "w")) {
+        std::fprintf(f, "%s\n", kRendererVersion);
+        std::fclose(f);
+      }
+    }
+  }
   if (fs::exists(done, ec)) {
-    return true;
+    return RenderTrainerPortraits(discPath, id, stop, error) && RenderOfferPictures(discPath, id, starting, stop, error);
   }
   if (!fs::exists(sGameProgram, ec)) {
-    error = "the game program isn't there: " + sGameProgram.string();
+    error = Fmt(Tr("the game program isn't there: %s"), sGameProgram.string().c_str());
     return false;
   }
   fs::create_directories(folder, ec);
   starting();
   sys::Process* game = StartHiddenGame({"XD_RENDER_ICON=all"}, discPath, true);
   if (game == nullptr) {
-    error = "could not start the game program";
+    error = Tr("could not start the game program");
     return false;
   }
   for (int waited = 0; !sys::Ended(game, 250); waited += 250) {
     if (stop() || waited > 5 * 60 * 1000) {
       sys::Stop(game);
       sys::Close(game);
-      error = stop() ? "stopped (the launcher closed, or Play was pressed)" : "the game took too long";
+      error = stop() ? Tr("stopped (the launcher closed, or Play was pressed)") : Tr("the game took too long");
       return false;
     }
   }
@@ -751,11 +958,10 @@ bool RenderPictures(const std::string& discPath, const std::string& discId, cons
     std::fclose(f);
   }
   if (code != 0) {
-    error = "the game's render mode ended with code " + std::to_string(code) + " (render_icon.txt in " +
-            folder.string() + ")";
+    error = Fmt(Tr("the game's render mode ended with code %lu (render_icon.txt in %s)"), code, folder.string().c_str());
     return false;
   }
-  return true;
+  return RenderTrainerPortraits(discPath, id, stop, error) && RenderOfferPictures(discPath, id, starting, stop, error);
 }
 
 }
@@ -779,16 +985,19 @@ int main(int argc, char** argv) {
   (void)argc;
   (void)argv;
 #endif
+  const auto Tr = [](const char* english) { return english; };
   launcher::GameInfo game;
   game.title = "Pokemon XD";
   game.windowTitle = "Pok\xC3\xA9mon XD";
   game.subtitle = "Gale of Darkness - PC";
   game.gameId = xd_settings::kGameId;
+  game.textureGameId = "GXXE01";
   game.discHelp =
-      "The game needs your own copy of Pokemon XD: Gale of Darkness (USA version, game ID GXXE01), saved as a disc "
-      "image file (.iso, .rvz, .gcm, ...). Nothing from the game comes with this program.";
+      Tr("The game needs your own copy of Pokemon XD: Gale of Darkness (USA version, game ID GXXE01), saved as a disc "
+         "image file (.iso, .rvz, .gcm, ...). Nothing from the game comes with this program.");
   const fs::path settings = xd::SettingsFolder();
   game.settingsFolder = settings;
+  engine::mods::SetTexturePackSource(settings / "textures", "GXXE01");
   game.modsFolder = settings / L"mods";
   game.modListFile = settings / L"mods.ini";
   game.playerFilesReadOnly = xd::PlayerFilesReadOnly();
@@ -801,15 +1010,23 @@ int main(int argc, char** argv) {
     game.program = own / L"game" / xdName;
   }
 #if defined(_WIN32)
-  const wchar_t* const kStarter = L"Pokemon XD.exe";
+  const wchar_t* const kStarters[] = {L"Pokemon XD Launcher.exe", L"Pokemon XD.exe"};
 #else
-  const char* const kStarter = "Pokemon XD.sh";
+  const char* const kStarters[] = {"Pokemon XD Launcher.sh", "Pokemon XD.sh"};
 #endif
-  game.shortcutTarget = own / kStarter;
-  if (fs::exists(own.parent_path() / kStarter, ec) &&
-      engine::update::IsGameFolderName(own.filename().string())) {
-    game.shortcutTarget = own.parent_path() / kStarter;
-  } else if (!fs::exists(game.shortcutTarget, ec)) {
+  game.shortcutTarget = own / kStarters[0];
+  for (const auto* starter : kStarters) {
+    if (fs::exists(own.parent_path() / starter, ec) &&
+        engine::update::IsGameFolderName(own.filename().string())) {
+      game.shortcutTarget = own.parent_path() / starter;
+      break;
+    }
+    if (fs::exists(own / starter, ec)) {
+      game.shortcutTarget = own / starter;
+      break;
+    }
+  }
+  if (!fs::exists(game.shortcutTarget, ec)) {
     game.shortcutTarget = sys::ProgramFile();
   }
   game.iconFolder = xd::UserFolder() / L"icons";
@@ -827,6 +1044,11 @@ int main(int argc, char** argv) {
     game.saves.cardFolder = CardFolderOf;
     game.saves.saveFile = SaveFileOf;
     game.saves.checkImport = CheckImport;
+    game.saves.findImportable = FindImportable;
+    game.saves.tradeOpen = xd::gbapage::Open;
+    game.saves.tradeDo = xd::gbapage::Trade;
+    game.saves.monsOpen = xd::colosseumpage::Open;
+    game.saves.monsDo = xd::colosseumpage::Import;
     game.saves.exportName = "01-GXXE-PokemonXD.gci";
     if (const fs::path bin = sys::EnvPath("XD_SAVE_BIN_DIR"); !bin.empty()) {
       game.saves.binFolder = bin;
@@ -846,9 +1068,9 @@ int main(int argc, char** argv) {
       game.prepareShaders = PrepareShaders;
     }
   }
-  game.ownIcons = {{"original", "XD (the program's own)", 1}, {"original_shadow", "XD, shadow aura", 2},
-                   {"original_minimal", "XD, minimal", 3}, {"original_swirl", "XD, shadow swirl", 4},
-                   {"original_light", "XD, light", 5}};
+  game.ownIcons = {{"original", Tr("XD (the program's own)"), 1}, {"original_shadow", Tr("XD, shadow aura"), 2},
+                   {"original_minimal", Tr("XD, minimal"), 3}, {"original_swirl", Tr("XD, shadow swirl"), 4},
+                   {"original_light", Tr("XD, light"), 5}};
   if (const fs::path dir = sys::EnvPath("XD_SHORTCUT_DIR"); !dir.empty()) {
     game.shortcutFolder = dir;
   }
@@ -863,6 +1085,23 @@ int main(int argc, char** argv) {
   game.modLooks = xd::playthrough::LooksOrSound;
   game.extra.sources = xd::ExtraSources();
   game.extra.identifyDisc = IdentifyDisc;
+  game.extra.otherVersion = [](const std::string& id) { return id.rfind("GXX", 0) == 0 && id != "GXXE01"; };
+  game.languages.setting = xd::languages::kSetting;
+  game.languages.noPackHint = xd::languages::kNoPackHint;
+  game.languages.whenHint = xd::languages::kWhenHint;
+  game.languages.offered = [] {
+    static std::vector<std::pair<std::string, std::string>> cached;
+    static std::chrono::steady_clock::time_point at{};
+    const auto now = std::chrono::steady_clock::now();
+    if (at == std::chrono::steady_clock::time_point{} || now - at > std::chrono::seconds(1)) {
+      cached.clear();
+      for (const xd::languages::Language* l : xd::languages::Available(xd::languages::ReadPack(xd::SettingsFolder()))) {
+        cached.emplace_back(l->id, l->name);
+      }
+      at = now;
+    }
+    return cached;
+  };
   SetUpUpdates(game.updates, own);
   return launcher::Run(game);
 }

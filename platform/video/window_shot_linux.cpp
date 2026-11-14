@@ -1,13 +1,16 @@
-#if defined(__linux__) || defined(__APPLE__)
+#if defined(__linux__) || defined(__APPLE__) || defined(_WIN32)
 #include <port_window_shot.h>
 
+#ifndef _WIN32
 #include <png.h>
+#endif
 
 #include <cstdio>
 #include <filesystem>
 #include <system_error>
 #include <vector>
 
+#ifndef _WIN32
 extern "C" {
 
 bool PortShot_SavePng(const wchar_t* path, const uint8_t* rgba, uint32_t w, uint32_t h) {
@@ -27,6 +30,7 @@ bool PortShot_SavePng(const wchar_t* path, const uint8_t* rgba, uint32_t w, uint
 }
 
 }
+#endif
 
 #include <port_freeze.h>
 
@@ -485,10 +489,12 @@ void PortShot_LinuxFrame(void) {
   ColourAsked(accepted);
 }
 
+#ifndef _WIN32
 bool PortShot_SaveWindow(const wchar_t* path) {
   PortShot_LinuxRequest(true, SaveWindowDone, new SaveTo{std::filesystem::path(path)});
   return true;
 }
+#endif
 
 }
 #endif

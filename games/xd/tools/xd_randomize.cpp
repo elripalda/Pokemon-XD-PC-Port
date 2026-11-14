@@ -908,6 +908,192 @@ int run_selftest(const em::DataCatalog& cat) {
       check(none && sink == 0 && r0b.code.rfind("XDR5-", 0) != 0, "the switch off: no Gen 4 species, not a version-5 code");
     }
   }
+  {
+    const em::DataTable* pd = cat.FindTable("pokemon_data");
+    std::vector<uint8_t> pdBytes;
+    check(pd != nullptr && !pd->places.empty() && read_disc_entry(pd->places[0].archive, pd->places[0].entry, pdBytes), "starter checks: the species table reads");
+    auto bst = [&](uint32_t species) {
+      uint32_t total = 0;
+      if (pd == nullptr || species >= pd->count) return total;
+      for (const auto& f : pd->fields) {
+        if (f.name != "basisStatus") continue;
+        for (uint32_t k = 0; k < 6; k++) total += em::ReadDataField(pdBytes.data() + pd->places[0].offset + species * pd->entrySize, f, k);
+      }
+      return total;
+    };
+    const std::set<uint32_t> eeveeFamily = {0x85, 0x86, 0x87, 0x88, 0xC4, 0xC5};
+    const uint32_t eeveeBst = bst(xr::kStarterEevee);
+    check(eeveeBst == 325, "Eevee's base stat total is 325 (the starter's window is built on it): " + std::to_string(eeveeBst));
+    auto starter = [&](xr::Style style, uint64_t seed, uint32_t choice, uint32_t similarOff, uint32_t movesKept, uint32_t gen4) {
+      er::Settings st;
+      xr::ApplyStyle(st, style);
+      st.seed = seed;
+      st.Set(sc, "starter", 1);
+      st.Set(sc, "starter.choice", choice);
+      st.Set(sc, "starter.similar", similarOff);
+      st.Set(sc, "starter.moves", movesKept);
+      st.Set(sc, "gen4", gen4);
+      xr::Result r;
+      if (!xr::Generate(cat, read_disc_entry, st, r, error)) std::printf("FAIL generate: %s\n", error.c_str());
+      return r;
+    };
+    {
+      bool stylesOff = true;
+      for (xr::Style style : {xr::Style::Light, xr::Style::Classic, xr::Style::Chaos}) {
+        er::Settings st;
+        xr::ApplyStyle(st, style);
+        stylesOff &= st.Get(sc, "starter") == 0 && st.Get(sc, "starter.choice") == 0 && st.Get(sc, "starter.similar") == 0 &&
+                     st.Get(sc, "starter.moves") == 0;
+      }
+      check(stylesOff && xr::CodeFor(xr::Style::Light, 99).rfind("XDR1-", 0) == 0 && xr::CodeFor(xr::Style::Classic, 12345).rfind("XDR2-", 0) == 0 &&
+                xr::CodeFor(xr::Style::Chaos, 777).rfind("XDR2-", 0) == 0,
+            "the starter is off in Light, Classic and Chaos, and their codes are still XDR1 / XDR2 / XDR2");
+      const xr::Result noStarter = make(xr::Style::Classic, 12345);
+      check(!noStarter.starter.on && noStarter.starter.count == 0, "starter off: an empty plan (the game's own Eevee)");
+      er::Settings a;
+      xr::ApplyStyle(a, xr::Style::Classic);
+      a.seed = 12345;
+      a.Set(sc, "starter", 1);
+      xr::Result withStarter;
+      xr::Generate(cat, read_disc_entry, a, withStarter, error);
+      check(withStarter.code.rfind("XDR6-", 0) == 0 && withStarter.starter.on && withStarter.mod.ToJson("x") == noStarter.mod.ToJson("x"),
+            "starter on: a version-6 code, the plan, and not a single other number changes (" + withStarter.code + ")");
+      std::string spoilerLine;
+      for (const std::string& line : withStarter.mod.spoiler) {
+        if (line.rfind("Starter", 0) == 0) spoilerLine = line;
+      }
+      check(!spoilerLine.empty() && withStarter.mod.spoiler.size() == noStarter.mod.spoiler.size() + 1, "the spoiler log gets one line: " + spoilerLine);
+      er::Settings round;
+      bool seedOnly = true;
+      check(er::DecodeCode(sc, withStarter.code, round, seedOnly, error) && !seedOnly && round.Get(sc, "starter") == 1 &&
+                round.Get(sc, "starter.choice") == 0 && round.Get(sc, "starter.similar") == 0 && round.Get(sc, "starter.moves") == 0 &&
+                er::EncodeCode(sc, round) == withStarter.code,
+            "the version-6 code reads back with the starter on and the defaults (random, similar on, natural moves)");
+      er::Settings v5 = a;
+      v5.Set(sc, "starter", 0);
+      v5.Set(sc, "gen4", 1);
+      const std::string code5 = er::EncodeCode(sc, v5);
+      er::Settings back5;
+      check(code5.rfind("XDR5-", 0) == 0 && er::DecodeCode(sc, code5, back5, seedOnly, error) && back5.Get(sc, "starter") == 0 &&
+                er::EncodeCode(sc, back5) == code5,
+            "a version-5 code is still written as version 5 and read with the starter off (" + code5 + ")");
+    }
+    {
+      size_t runs = 0, good = 0, outsideWindow = 0, offRuns = 0, differentMoves = 0, keptOk = 0, keptRuns = 0;
+      std::string bad;
+      for (uint32_t choice = 0; choice < 3; choice++) {
+        for (uint32_t similarOff = 0; similarOff < 2; similarOff++) {
+          for (uint32_t kept = 0; kept < 2; kept++) {
+            for (uint64_t seed = 1; seed <= 6; seed++) {
+              const xr::Result r = starter(xr::Style::Classic, seed * 101 + choice, choice, similarOff, kept, 0);
+              runs++;
+              const xr::StarterPlan& p = r.starter;
+              bool ok = p.on && p.choice == choice && p.count == (choice == 1 ? 3u : 1u) && p.level == 10 && p.natural == (kept == 0);
+              std::set<uint32_t> distinct;
+              for (uint32_t k = 0; k < p.count && ok; k++) {
+                const uint32_t x = p.species[k];
+                distinct.insert(x);
+                if (choice != 2 && x == xr::kStarterEevee) ok = false, bad = "a randomized starter that is Eevee";
+                if (choice == 2 && eeveeFamily.count(x) == 0) ok = false, bad = "Eevee family gave species " + std::to_string(x);
+                const uint32_t total = bst(x);
+                if (choice != 2 && !similarOff && (total * 10 < eeveeBst * 9 || total * 10 > eeveeBst * 11)) ok = false, bad = "strength " + std::to_string(total) + " outside Eevee's +-10%";
+                if (choice != 2 && similarOff) {
+                  offRuns++;
+                  if (total * 10 < eeveeBst * 9 || total * 10 > eeveeBst * 11) outsideWindow++;
+                }
+                if (p.moves[k][0] == 0) ok = false, bad = "a starter without a first move";
+                if (kept) {
+                  keptRuns++;
+                  bool same = true;
+                  for (uint32_t m = 0; m < 4; m++) same &= p.moves[k][m] == xr::kStarterEeveeMoves[m];
+                  keptOk += same ? 1 : 0;
+                } else if (p.moves[k][0] != xr::kStarterEeveeMoves[0] || p.moves[k][1] != xr::kStarterEeveeMoves[1]) {
+                  differentMoves++;
+                }
+              }
+              if (choice == 1 && distinct.size() != 3) ok = false, bad = "pick 1 of 3 with two equal species";
+              ok &= r.mod.spoiler.back().rfind("  ", 0) == 0 || r.mod.spoiler.back().rfind("Starter", 0) == 0;
+              if (ok) good++;
+            }
+          }
+        }
+      }
+      check(good == runs, "starter: " + std::to_string(runs) + " runs of every choice x strength x moves pass (the generator's own checks too)" +
+                              (bad.empty() ? "" : ": " + bad));
+      check(offRuns > 0 && outsideWindow > 0, "with similar strength off the starter leaves Eevee's window sometimes (" + std::to_string(outsideWindow) + " of " +
+                                                  std::to_string(offRuns) + " picks)");
+      check(keptRuns > 0 && keptOk == keptRuns, "moves kept: Eevee's own four (" + std::to_string(keptOk) + " of " + std::to_string(keptRuns) + ")");
+      check(differentMoves > 0, "moves natural: the species' own (" + std::to_string(differentMoves) + " picks differ from Eevee's)");
+    }
+    {
+      const xr::Result a = starter(xr::Style::Classic, 31337, 1, 0, 0, 0), b = starter(xr::Style::Classic, 31337, 1, 0, 0, 0);
+      const xr::Result c = starter(xr::Style::Classic, 31338, 1, 0, 0, 0);
+      bool same = true, other = false;
+      for (uint32_t k = 0; k < 3; k++) same &= a.starter.species[k] == b.starter.species[k], other |= a.starter.species[k] != c.starter.species[k];
+      check(same && other && a.mod.spoiler == b.mod.spoiler && a.code == b.code, "the same code twice: the same three starters; another seed: others");
+      er::Settings x;
+      xr::ApplyStyle(x, xr::Style::Chaos);
+      x.seed = 31337;
+      x.Set(sc, "starter", 1);
+      x.Set(sc, "starter.choice", 1);
+      xr::Result rx;
+      xr::Generate(cat, read_disc_entry, x, rx, error);
+      bool sameSpecies = true;
+      for (uint32_t k = 0; k < 3; k++) sameSpecies &= rx.starter.species[k] == a.starter.species[k];
+      check(sameSpecies, "the starter's picks don't depend on the other switches (own random stream)");
+    }
+    {
+      std::set<uint32_t> seen;
+      for (uint64_t seed = 1; seed <= 60; seed++) seen.insert(starter(xr::Style::Light, seed, 2, 0, 0, 0).starter.species[0]);
+      check(seen.size() == 6 && seen.count(xr::kStarterEevee) == 1, "Eevee family: all six (Eevee and the five evolutions) came up in 60 seeds: " + std::to_string(seen.size()));
+    }
+    {
+      size_t legendary = 0;
+      for (uint64_t seed = 1; seed <= 150; seed++) {
+        er::Settings st;
+        xr::ApplyStyle(st, xr::Style::Chaos);
+        st.seed = seed;
+        st.Set(sc, "starter", 1);
+        st.Set(sc, "starter.similar", 1);
+        xr::Result r;
+        xr::Generate(cat, read_disc_entry, st, r, error);
+        if (bst(r.starter.species[0]) >= 580) legendary++;
+      }
+      check(legendary > 0, "similar off + Legendaries any: strong species (580+) can be the starter (" + std::to_string(legendary) + " of 150)");
+      size_t strong = 0;
+      for (uint64_t seed = 1; seed <= 150; seed++) {
+        er::Settings st;
+        xr::ApplyStyle(st, xr::Style::Chaos);
+        st.seed = seed;
+        st.Set(sc, "starter", 1);
+        xr::Result r;
+        xr::Generate(cat, read_disc_entry, st, r, error);
+        if (bst(r.starter.species[0]) >= 400) strong++;
+      }
+      check(strong == 0, "similar on (even with Legendaries any): no species over 400 in 150 seeds (" + std::to_string(strong) + ")");
+    }
+    if (!sGen4Pack.empty()) {
+      uint32_t discTop = pd != nullptr ? pd->count : 0;
+      size_t gen4Random = 0, gen4Family = 0, gen4Pick = 0;
+      std::string movesBad;
+      for (uint64_t seed = 1; seed <= 80; seed++) {
+        const xr::Result r = starter(xr::Style::Classic, seed, 0, 1, 0, 1);
+        if (r.starter.species[0] >= discTop) gen4Random++;
+        const xr::Result f = starter(xr::Style::Classic, seed, 2, 0, 0, 1);
+        if (f.starter.species[0] >= discTop) gen4Family++;
+        const xr::Result t = starter(xr::Style::Classic, seed, 1, 0, 0, 1);
+        for (uint32_t k = 0; k < 3; k++) {
+          if (t.starter.species[k] >= discTop) gen4Pick++;
+          if (t.starter.moves[k][0] == 0) movesBad = "a Gen 4 starter without moves";
+        }
+      }
+      check(gen4Random > 0 && gen4Pick > 0 && movesBad.empty(), "Gen 4 on: Gen 4 species are starters (random " + std::to_string(gen4Random) + " of 80, in pick-3 " +
+                                                                    std::to_string(gen4Pick) + " of 240)" + (movesBad.empty() ? "" : ": " + movesBad));
+      check(gen4Family > 0, "Gen 4 on, Eevee family: Leafeon / Glaceon turn up (" + std::to_string(gen4Family) + " of 80)");
+      const xr::Result noGen4 = starter(xr::Style::Classic, 5, 0, 1, 0, 0);
+      check(noGen4.starter.species[0] < discTop, "Gen 4 off: a disc species");
+    }
+  }
   std::printf(sOk ? "ALL OK\n" : "FAILED\n");
   return sOk ? 0 : 1;
 }

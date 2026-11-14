@@ -445,7 +445,7 @@ int main(int argc, char** argv) {
                                      {top + "/game/fonts/", "", '5', 0755}, {top + "/game/fonts/a.ttf", "font"}}));
       } else {
         write_file(zip, make_zip({{top + "/Starter.exe", "starter", true}, {top + "/Read me.txt", "read", true},
-                                  {top + "/game/launcher.exe", "launcher 0.2.0", true}, {top + "/game/game.exe", "game 0.2.0", true},
+                                  {top + "/game/launcher.exe", "launcher 0.2.0", true, 0, 0100755}, {top + "/game/game.exe", "game 0.2.0", true, 0, 0100755},
                                   {top + "/game/version.txt", "0.2.0\r\n", false}, {top + "/game/fonts/a.ttf", "font", true}}));
       }
       return zip;
@@ -707,6 +707,27 @@ int main(int argc, char** argv) {
         check(Install(w, installed, error) && installed == "pending", "Mac: a whole download as the update file installs: " + error);
         check(FolderVersion(root / L".Pokemon XD updates" / L"pending" / L"Pokemon XD.app" / L"Contents" / L"MacOS") == "0.2.0",
               "Mac: the app inside the whole download is the one waiting");
+#if !defined(_WIN32)
+        {
+          const fs::path zip2 = work / L"staging" / L"mac-top-nomodes-0.2.0.zip";
+          const std::string macho = std::string("\xCF\xFA\xED\xFE", 4);
+          write_file(zip2, make_zip({{"Pokemon XD.app/Contents/MacOS/xd_launcher", macho + "launcher 0.2.0", true},
+                                     {"Pokemon XD.app/Contents/MacOS/xd", macho + "game 0.2.0", true},
+                                     {"Pokemon XD.app/Contents/MacOS/lib/helper.sh", "#!/bin/sh\n", true},
+                                     {"Pokemon XD.app/Contents/Resources/version.txt", "0.2.0\n", false},
+                                     {"Pokemon XD.app/Contents/MacOS/version.txt", "0.2.0\n", false}}));
+          InstallRequest t = r;
+          t.package = zip2;
+          t.manifest.size = fs::file_size(zip2);
+          t.manifest.sha256 = sha_of(zip2);
+          check(Install(t, installed, error) && installed == "pending", "Mac: an app at the top of a zip without modes installs: " + error);
+          const fs::path macos = root / L".Pokemon XD updates" / L"pending" / L"Pokemon XD.app" / L"Contents" / L"MacOS";
+          const auto exec = [](const fs::path& f) { return (fs::status(f).permissions() & fs::perms::owner_exec) != fs::perms::none; };
+          check(exec(macos / L"xd") && exec(macos / L"xd_launcher") && exec(macos / L"lib" / L"helper.sh") && !exec(macos / L"version.txt"),
+                "Mac: the executable bits are put back on the programs and scripts (not on text files)");
+          check(Install(w, installed, error), "Mac: the whole download again (the next tests go on from it): " + error);
+        }
+#endif
       }
 #if !defined(_WIN32)
       const fs::path state = root / L".Pokemon XD updates";

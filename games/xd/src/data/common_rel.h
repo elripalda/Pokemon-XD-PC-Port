@@ -53,11 +53,15 @@ typedef struct {
   size_t nSets;
 } XDExtraRow;
 void PortXD_SetExtraRows(const XDExtraRow* rows, size_t count);
+void PortXD_SetModernType(bool on, uint32_t kind, uint32_t sprite, uint32_t smallSprite, uint32_t name);
 bool PortXD_CommonTableCounts(uint32_t* species, uint32_t* moves, uint32_t* items);
+const XDCommonTables* PortXD_LiveCommonTables(void);
+void PortXD_SetLiveCommonTables(const XDCommonTables* tables);
 
 bool PortXD_ConvertCommonRel(const uint8_t* relFile, size_t relSize, XDCommonTables* out, char* error, size_t errorSize);
 
 bool PortXD_LoadCommonRel(XDCommonTables* out, char* error, size_t errorSize);
+bool PortXD_LoadCommonRelOriginal(XDCommonTables* out, char* error, size_t errorSize);
 
 #ifdef __cplusplus
 }

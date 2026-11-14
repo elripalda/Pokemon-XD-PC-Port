@@ -2,6 +2,7 @@ add_library(engine_formats STATIC formats/lzss_fsys.c formats/fsys_build.c forma
 target_include_directories(engine_formats PUBLIC formats/include)
 
 add_subdirectory(formats/pbr)
+add_subdirectory(formats/colo)
 
 if (WIN32)
   add_library(engine_gs STATIC gs/gsthread_fibers.cpp)
@@ -16,9 +17,21 @@ target_include_directories(engine_gs PUBLIC gs/include)
 add_executable(gsthread_test gs/tests/gsthread_test.cpp)
 target_link_libraries(gsthread_test PRIVATE engine_gs)
 
+file(GLOB XD_LOCALE_FILES CONFIGURE_DEPENDS "${PROJECT_SOURCE_DIR}/locale/*.txt")
+add_custom_command(OUTPUT "${CMAKE_CURRENT_BINARY_DIR}/i18n_locale_data.cpp"
+  COMMAND ${CMAKE_COMMAND} -DLOCALE_DIR=${PROJECT_SOURCE_DIR}/locale -DOUT=${CMAKE_CURRENT_BINARY_DIR}/i18n_locale_data.cpp
+          -P ${CMAKE_CURRENT_SOURCE_DIR}/i18n/embed_locale.cmake
+  DEPENDS ${XD_LOCALE_FILES} ${CMAKE_CURRENT_SOURCE_DIR}/i18n/embed_locale.cmake
+  VERBATIM)
+add_library(engine_i18n STATIC i18n/i18n.cpp "${CMAKE_CURRENT_BINARY_DIR}/i18n_locale_data.cpp")
+target_include_directories(engine_i18n PUBLIC i18n/include)
+add_executable(i18n_test i18n/tests/i18n_test.cpp)
+target_link_libraries(i18n_test PRIVATE engine_i18n)
+
 add_library(engine_settings STATIC settings/settings.cpp settings/settings_ini.cpp settings/standard_settings.cpp
   settings/settings_rules.cpp)
 target_include_directories(engine_settings PUBLIC settings/include)
+target_link_libraries(engine_settings PUBLIC engine_i18n)
 
 add_executable(settings_test settings/tests/settings_test.cpp)
 target_link_libraries(settings_test PRIVATE engine_settings)
@@ -51,6 +64,18 @@ target_link_libraries(engine_save_thumbnail PUBLIC ZLIB::ZLIB)
 add_executable(save_thumbnail_test memcard/tests/save_thumbnail_test.cpp)
 target_link_libraries(save_thumbnail_test PRIVATE engine_save_thumbnail)
 
+add_library(engine_card_sources STATIC memcard/card_sources.cpp)
+target_link_libraries(engine_card_sources PUBLIC engine_memcard)
+target_compile_options(engine_card_sources PRIVATE ${XD_FLAG_UTF8})
+add_executable(card_sources_test memcard/tests/card_sources_test.cpp)
+target_link_libraries(card_sources_test PRIVATE engine_card_sources)
+target_compile_options(card_sources_test PRIVATE ${XD_FLAG_UTF8})
+
+add_library(engine_colo_save STATIC colo_save/colo_save.cpp)
+target_include_directories(engine_colo_save PUBLIC colo_save/include)
+add_executable(colo_save_test colo_save/tests/colo_save_test.cpp)
+target_link_libraries(colo_save_test PRIVATE engine_colo_save)
+
 add_library(engine_disc_check STATIC disc_check/disc_check.cpp disc_check/disc_check_cache.cpp)
 target_include_directories(engine_disc_check PUBLIC disc_check/include)
 target_link_libraries(engine_disc_check PUBLIC platform_disc)
@@ -61,9 +86,9 @@ target_compile_options(disc_check_test PRIVATE ${XD_FLAG_UTF8}) # (a test path w
 aurora_copy_runtime_dlls(disc_check_test)
 
 add_library(engine_mods STATIC mods/mod_manifest.cpp mods/mod_list.cpp mods/mod_load.cpp mods/mod_review.cpp mods/mods_disc.cpp
-  mods/data_mods.cpp)
+  mods/data_mods.cpp mods/mod_packs.cpp)
 target_include_directories(engine_mods PUBLIC mods/include)
-target_link_libraries(engine_mods PUBLIC engine_formats platform_disc)
+target_link_libraries(engine_mods PUBLIC engine_formats platform_disc engine_hdtex engine_i18n)
 
 add_executable(mods_test mods/tests/mods_test.cpp)
 target_link_libraries(mods_test PRIVATE engine_mods)
@@ -134,6 +159,7 @@ else () # Linux / Mac: downloads through the system's curl (update/update_fetch_
 endif ()
 target_include_directories(engine_update PUBLIC update/include)
 target_link_libraries(engine_update PRIVATE monocypher ZLIB::ZLIB)
+target_link_libraries(engine_update PUBLIC engine_i18n)
 xd_link_windows_libs(engine_update PRIVATE winhttp bcrypt)
 
 add_executable(update_test update/tests/update_test.cpp)
@@ -145,3 +171,23 @@ target_include_directories(engine_randomizer PUBLIC randomizer/include)
 
 add_executable(randomizer_test randomizer/tests/randomizer_test.cpp)
 target_link_libraries(randomizer_test PRIVATE engine_randomizer)
+
+find_package(Threads REQUIRED)
+add_library(engine_net STATIC net/net_types.cpp net/net_crypto.cpp net/net_session.cpp net/net_udp.cpp net/net_proto.cpp
+  net/net_connection.cpp net/net_trade.cpp)
+target_include_directories(engine_net PUBLIC net/include)
+target_link_libraries(engine_net PUBLIC monocypher Threads::Threads)
+xd_link_windows_libs(engine_net PUBLIC ws2_32 bcrypt)
+
+add_executable(net_test net/tests/net_test.cpp)
+target_link_libraries(net_test PRIVATE engine_net)
+add_executable(net_trade_test net/tests/net_trade_test.cpp)
+target_link_libraries(net_trade_test PRIVATE engine_net)
+add_executable(xd_net_test net/tools/xd_net_test.cpp)
+target_link_libraries(xd_net_test PRIVATE engine_net)
+
+add_library(engine_hdtex STATIC hdtex/hd_textures.cpp)
+target_include_directories(engine_hdtex PUBLIC hdtex/include)
+
+add_executable(hdtex_test hdtex/tests/hdtex_test.cpp)
+target_link_libraries(hdtex_test PRIVATE engine_hdtex)
